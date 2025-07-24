@@ -20,10 +20,6 @@ public:
     // Standard-Konstruktor mit Default-Werten
     KeyRotationManager();
 
-    // Konstruktor zur Initialisierung mit benutzerdefinierten Werten
-    KeyRotationManager(unsigned long rotationIntervalMs, unsigned long messageCountThreshold,
-                       KeyGenerationAndDistributionCallback keyGenCallback, RS485SecureStack* secureStackInstance);
-
     // Initialisiert den Manager und setzt die Referenz auf die RS485SecureStack Instanz.
     // Dies muss im Setup des Master-Knotens aufgerufen werden.
     void begin(KeyGenerationAndDistributionCallback keyGenCallback, RS485SecureStack* secureStackInstance);
@@ -35,7 +31,7 @@ public:
     // Methode, die nach jeder erfolgreichen Nachrichtenübertragung aufgerufen wird.
     void notifyMessageSent();
 
-    // Setter für die Rotations-Policys
+    // Setter für die Rotations-Policys (optional, für erweiterte Konfiguration)
     void setRotationInterval(unsigned long intervalMs);     // Zeitbasiert in Millisekunden
     void setMessageCountThreshold(unsigned long count); // Nachrichtenanzahl-basiert
 
@@ -48,8 +44,8 @@ private:
     RS485SecureStack* _secureStack; // Zeiger auf die RS485SecureStack-Instanz
 
     // Rotations-Policys
-    unsigned long _rotationIntervalMs;   // Zeitintervall für Schlüsselrotation (Standard: 1 Stunde)
-    unsigned long _messageCountThreshold; // Anzahl der Nachrichten für Schlüsselrotation (Standard: 1000 Nachrichten)
+    unsigned long _rotationIntervalMs;   // Zeitintervall für Schlüsselrotation
+    unsigned long _messageCountThreshold; // Anzahl der Nachrichten für Schlüsselrotation
 
     // Interne Zustandsvariablen
     unsigned long _lastRotationTime;     // Millis() der letzten Rotation
