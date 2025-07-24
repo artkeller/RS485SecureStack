@@ -127,7 +127,7 @@ public:
     void setCurrentKeyId(uint16_t keyId);
     void setSessionKey(uint16_t keyId, const byte sessionKey[AES_KEY_SIZE]);
 
-
+     // Klassenmember für Nachrichtentypen
     static const char MSG_TYPE_DATA = MSG_TYPE_DATA_TOKEN;
     static const char MSG_TYPE_ACK = MSG_TYPE_ACK_TOKEN;
     static const char MSG_TYPE_NACK = MSG_TYPE_NACK_TOKEN;
