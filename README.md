@@ -1,6 +1,6 @@
 # RS485SecureStack: Robuster & Sicherer RS485 Kommunikationsstack
 
-(Aplhaversion - aktuell nur auf deutsch)
+(Alphaversion - aktuell nur auf deutsch)
 
 ## 💡 Warum dieses Projekt?
 
@@ -16,135 +16,73 @@ Dieses Projekt bietet eine komplette, praxiserprobte und bescheidene Lösung fü
 
 ## ✨ Features auf einen Blick
 
-  * **Sichere Kommunikation:**
-      * **AES-128-Verschlüsselung (CBC-Modus):** Schutz der Vertraulichkeit von Nutzdaten.
-      * **HMAC-SHA256 Authentifizierung:** Gewährleistung der Datenintegrität und Authentizität jeder Nachricht. Verhindert Manipulation und Spoofing.
-      * **Dynamisches Rekeying:** Der Scheduler (Master) kann in regelmäßigen Abständen neue Session Keys an alle Teilnehmer verteilen, um die Langzeit-Sicherheit zu erhöhen.
-  * **Intelligentes Bus-Management (durch den Scheduler/Master):**
-      * **Automatisierte Baudraten-Einmessung:** Der Master testet und ermittelt die höchste stabile Baudrate für alle Bus-Teilnehmer und passt diese dynamisch an die Umgebungsbedingungen an.
-      * **Fehlerüberwachung:** Kontinuierliche Überwachung der Kommunikations-Fehlerraten (HMAC-Fehler, fehlende ACKs) durch den Master.
-      * **Master-Heartbeat:** Der Master sendet einen regelmäßigen "Herzschlag", um seine Präsenz zu signalisieren.
-      * **Multi-Master-Erkennung & Kollisionsvermeidung:** Der Master erkennt das Auftreten eines unerlaubten/zweiten Masters auf dem Bus und geht in einen sicheren Fehlerzustand, um Schäden zu verhindern.
-      * **Zentrale Zugriffskontrolle:** Der Master vergibt tokenbasierte Sendeerlaubnis an Submaster, um Kollisionen zu vermeiden und den Datenfluss zu steuern.
-  * **Flexible Node-Typen:**
-      * **Scheduler (Master):** Die zentrale Steuerungseinheit des Busses.
-      * **Submaster:** Intelligente Knoten, die vom Master Sendeerlaubnis erhalten und Clients steuern können.
-      * **Clients:** Passive Knoten, die auf Anfragen reagieren.
-      * **Bus-Monitor:** Ein passiver Lauscher, der den gesamten Verkehr entschlüsseln und analysieren kann, um Debugging und Systemüberwachung zu erleichtern.
-  * **Einfache Integration:** Arduino-Bibliothek für ESP32-Plattformen.
-  * **Hohe Zuverlässigkeit:** Konzipiert für den Einsatz in rauen Umgebungen.
+* **Sichere Kommunikation:**
+    * **AES-128-Verschlüsselung (CBC-Modus):** Schutz der Vertraulichkeit von Nutzdaten.
+    * **HMAC-SHA256 Authentifizierung:** Gewährleistung der Datenintegrität und Authentizität jeder Nachricht. Verhindert Manipulation und Spoofing.
+    * **Dynamisches Rekeying:** Der Scheduler (Master) kann in regelmäßigen Abständen neue Session Keys an alle Teilnehmer verteilen, um die Langzeit-Sicherheit zu erhöhen.
+* **Intelligentes Bus-Management (durch den Scheduler/Master):**
+    * **Automatisierte Baudraten-Einmessung:** Der Master testet und ermittelt die höchste stabile Baudrate für alle Bus-Teilnehmer und passt diese dynamisch an die Umgebungsbedingungen an.
+    * **Fehlerüberwachung:** Kontinuierliche Überwachung der Kommunikations-Fehlerraten (HMAC-Fehler, fehlende ACKs) durch den Master.
+    * **Master-Heartbeat:** Der Master sendet einen regelmäßigen "Herzschlag", um seine Präsenz zu signalisieren.
+    * **Multi-Master-Erkennung & Kollisionsvermeidung:** Der Master erkennt das Auftreten eines unerlaubten/zweiten Masters auf dem Bus und geht in einen sicheren Fehlerzustand, um Schäden zu verhindern.
+    * **Zentrale Zugriffskontrolle:** Der Master vergibt tokenbasierte Sendeerlaubnis an Submaster, um Kollisionen zu vermeiden und den Datenfluss zu steuern.
+* **Flexible Node-Typen:**
+    * **Scheduler (Master):** Die zentrale Steuerungseinheit des Busses.
+    * **Submaster:** Intelligente Knoten, die vom Master Sendeerlaubnis erhalten und Clients steuern können.
+    * **Clients:** Passive Knoten, die auf Anfragen reagieren.
+    * **Bus-Monitor:** Ein passiver Lauscher, der den gesamten Verkehr entschlüsseln und analysieren kann, um Debugging und Systemüberwachung zu erleichtern.
+* **Einfache Integration:** Arduino-Bibliothek für ESP32-Plattformen.
+* **Hohe Zuverlässigkeit:** Konzipiert für den Einsatz in rauen Umgebungen.
 
 -----
 
 ## 🔒 Sicherheitsanalyse & Bewertung der gebotenen Security und Safety
 
-RS485SecureStack wurde mit einem starken Fokus auf die Abwehr gängiger Bedrohungen in seriellen Bussystemen entwickelt. Die Implementierung berücksichtigt sowohl **Security** (Schutz vor böswilligen Angriffen) als auch **Safety** (Schutz vor unbeabsichtigten Fehlern und deren Folgen).
-
-### Architekturentscheidungen zur Sicherheit
-
-Für dieses Projekt wurde bewusst eine **Shared-Key-Lösung** für den Master Authentication Key (MAK) gewählt, anstatt komplexere, zertifikatsbasierte Ansätze oder Hardware Secure Elements (wie z.B. ATECC608A). Die Gründe dafür sind:
-
-  * **Komplexitätsreduktion für den Anwendungsfall:** Für die Anbindung einer kleinen bis mittleren Anzahl von Clients im industriellen Kontext bieten Zertifikate oder Secure Elements einen Overhead, der oft nicht im Verhältnis zum Sicherheitsgewinn für diese spezifische Nische steht. Ihre Implementierung erfordert einen erheblichen Aufwand in Bezug auf Public Key Infrastructure (PKI), Zertifikatsmanagement, Secure Provisioning und die Integration spezialisierter Hardware.
-  * **Proof-of-Concept & Machbarkeit:** Dieses Projekt dient als **Proof-of-Concept (PoC)**. Eine Shared-Key-Lösung ermöglicht es, die Kernkonzepte der sicheren und intelligenten Bus-Kommunikation schnell zu demonstrieren und zu validieren, ohne sich in der Komplexität eines vollständigen PKI-Systems zu verlieren.
-  * **Ressourcenbeschränkung:** Mikrocontroller wie der ESP32-C3 haben zwar Kryptobeschleuniger, aber die Verwaltung einer komplexen PKI oder die Interaktion mit Secure Elements kann zusätzliche Hard- und Software-Ressourcen binden, die für andere Aufgaben benötigt werden oder die Kosten des Gesamtsystems erhöhen.
-
-### Bedrohungsmodell und Abwehrmechanismen
-
-Wir betrachten folgende potenzielle Angriffs- und Fehlerszenarien:
-
-| Bedrohung / Fehlerszenario         | Beschreibung                                                              | Security/Safety | Abwehrmeermechanismus in RS485SecureStack                                                                                                                                                                     | Bewertung                                                                                                                                                                                                         |
-| :--------------------------------- | :------------------------------------------------------------------------ | :-------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **1. Unautorisiertes Mithören (Eavesdropping)** | Ein Angreifer greift physisch auf den Bus zu und liest den Kommunikationsverkehr mit. | Security        | **AES-128 (CBC-Modus) Verschlüsselung** der Payloads. Selbst wenn Pakete abgefangen werden, sind die Nutzdaten unlesbar, solange der Angreifer den geheimen Master Key nicht besitzt.                       | **Hoch:** Effektiver Schutz der Vertraulichkeit. AES-128 ist ein starker Standard. CBC erfordert korrekte IV-Nutzung, was im Stack implementiert ist.                                                                  |
-| **2. Nachrichten-Manipulation** | Ein Angreifer ändert Nachrichteninhalte während der Übertragung.          | Security        | **HMAC-SHA256 Authentifizierung** für jedes Paket. Jede Änderung am Paket (Header, Payload) führt zu einem ungültigen HMAC, wodurch das Paket vom Empfänger verworfen wird.                                    | **Hoch:** Gewährleistet Datenintegrität. SHA256 ist kryptographisch stark. Angreifer können keine gültigen manipulierten Nachrichten erzeugen ohne den geheimen Master Key.                                             |
-| **3. Nachrichten-Einschleusung (Spoofing)** | Ein Angreifer injiziert eigene, gefälschte Nachrichten in den Bus, gibt sich als legitimer Teilnehmer aus oder sendet ungültige Befehle. | Security        | **HMAC-SHA256 Authentifizierung.** Nur Nachrichten, deren HMAC mit dem geheimen Master Key korrekt berechnet wurde, werden akzeptiert. Ein Angreifer ohne Kenntnis des Master Keys kann keine gültigen HMACs erzeugen. | **Hoch:** Verhindert effektiv das Einschleusen von Nachrichten. Dies schützt vor Replay-Angriffen nur bedingt (falls ältere HMACs mit altem Key noch gültig wären), daher das Rekeying.                                  |
-| **4. Denial of Service (DoS) durch Bus-Spamming / Kollisionen** | Ein Angreifer oder ein fehlerhafter Node sendet kontinuierlich Nachrichten und blockiert den Bus für legitime Kommunikation. | Security/Safety | **Zentrale Zugriffskontrolle (Token-basiert durch Master):** Nur Nodes mit Sendeerlaubnis dürfen senden. \<br\>**Master-Heartbeat & Multi-Master-Erkennung:** Der legitime Master überwacht den Bus aktiv auf unautorisierte Master-Aktivität. Bei Erkennung wird der Master in einen sicheren Stopp-Zustand versetzt. | **Moderat bis Hoch:** Die Token-basierte Methode ist effektiv gegen unabsichtliches Spamming. Gegen gezielte, böswillige Überflutung durch einen Angreifer, der die Physik manipuliert, ist es schwieriger, aber die Erkennung schützt den Master. Die Sicherheit hängt davon ab, wie schnell und entschieden der Master reagiert. |
-| **5. Ausfall des Master** | Der Master-Knoten fällt aus und das System verliert seine zentrale Steuerung. | Safety          | **Master-Heartbeat-Überwachung durch alle Nodes:** Nodes erkennen das Fehlen des Master-Heartbeats und gehen in einen definierten, passiven Zustand (stellen eigene aktive Kommunikation ein). | **Hoch:** Verhindert unkontrolliertes Verhalten der Nodes nach Master-Ausfall. Eine automatische Master-Wahl (Leader Election) ist nicht implementiert, dies ist ein bewusster Design-Entscheid für Einfachheit und Determinismus. |
-| **6. Fehlkonfiguration der Baudrate** | Ein Node ist mit einer falschen Baudrate konfiguriert oder die optimale Baudrate ändert sich durch Umweltfaktoren. | Safety          | **Automatisierte Baudraten-Einmessung durch den Master:** Der Master testet dynamisch die beste Baudrate und teilt sie den Nodes mit. \<br\>**Baudraten-Anpassung durch Nodes:** Nodes können ihre Baudrate auf Anweisung des Masters ändern. | **Hoch:** Erhöht die Systemrobustheit und -verfügbarkeit in variablen Umgebungen erheblich.                                                                                                                                 |
-| **7. Veraltete / Kompromittierte Session Keys** | Ein Session Key ist über einen längeren Zeitraum aktiv und könnte durch Analyse des verschlüsselten Verkehrs entschlüsselt worden sein. | Security        | **Dynamisches Rekeying:** Der Master sendet in regelmäßigen Abständen neue Session Keys an alle Nodes. | **Hoch:** Begrenzt die Lebensdauer eines Schlüssels und damit das Zeitfenster für Angriffe. Dies ist ein wichtiger Schritt über statische Schlüssel hinaus.                                                                  |
-| **8. Firmware-Manipulation / Physischer Zugriff & Master Key Schutz** | Ein Angreifer erhält physischen Zugriff auf einen Node und kann dessen Firmware ändern oder den Master Key auslesen. | Security        | **Nicht direkt vom Stack abgedeckt.** Da es sich um eine Shared-Key-Lösung handelt, ist der `MASTER_KEY` derzeit im Quellcode hinterlegt. Dies erfordert physische Sicherheitsmaßnahmen (z.B. Gehäuse, Manipulationserkennung), Secure Boot / Encrypted Flash auf dem ESP32 und sicheres Key-Provisioning. | **Gering (in aktueller PoC-Version):** **Diese Version ist NICHT für den Produktionseinsatz geeignet.** Der Schutz des Master Authentication Key (MAK) ist in dieser Phase nicht vollumfänglich implementiert. **Sobald ein sicheres Provisioning-Verfahren für den MAK vorliegt (z.B. über eFuse, NVS mit Verschlüsselung, oder einen externen Secure Element Chip), können Feldtests und ein Produktions-Rollout in Betracht gezogen werden.** |
-
-### Bewertung der gebotenen Sicherheit
-
-RS485SecureStack bietet eine **robuste Basis für sichere und fehlertolerante RS485-Kommunikation**. Durch die Kombination von Verschlüsselung, Authentifizierung und intelligentem Bus-Management werden die häufigsten Angriffs- und Fehlerszenarien auf dieser Protokollebene effektiv abgedeckt.
-
-  * **Security (Vertraulichkeit, Integrität, Authentizität):** Die Verwendung von AES-128 und HMAC-SHA256 mit einem Pre-Shared Key, unterstützt durch dynamisches Rekeying, bietet ein **hohes Sicherheitsniveau** gegen Mithören, Manipulation und Fälschung von Nachrichten, **solange der Master Key geheim bleibt und geschützt ist**.
-  * **Safety (Zuverlässigkeit, Verfügbarkeit, Schadensvermeidung):** Die Mechanismen zur Baudraten-Anpassung, Fehlerüberwachung und insbesondere die **Multi-Master-Erkennung und der sichere Stopp-Zustand** des Masters sind entscheidende Beiträge zur Betriebssicherheit. Sie minimieren das Risiko von Bus-Kollisionen und unkontrollierten Systemzuständen.
-
-**Wichtiger Hinweis:** Diese Version des RS485SecureStack ist **explizit für Proof-of-Concepts (PoCs)** und Evaluierungen in kontrollierten Umgebungen gedacht. Für den Produktionseinsatz ist das **sichere Provisioning und der Schutz des Master Authentication Key (MAK)** von entscheidender Bedeutung. Sobald entsprechende Verfahren dafür implementiert sind (z.B. durch Nutzung der ESP32-eigenen Secure-Boot- und Flash-Verschlüsselungsfunktionen oder dedizierte Hardware-Security-Module), kann das System für Feldtests und einen späteren Produktions-Rollout in Betracht gezogen werden.
+Wichtige Informationen zu den implementierten Sicherheitsmechanismen, dem Bedrohungsmodell und Sicherheitshinweisen für den Einsatz dieses Stacks finden Sie in der [SECURITY.md](SECURITY.md) Datei im Root-Verzeichnis dieses Repositories. Dort werden auch die Architekturentscheidungen zur Sicherheit und die detaillierte Funktionsweise des Schlüsselmanagements und der Schlüsselrotation erläutert.
 
 -----
 
-## ⚙️ Architektur & Komponenten
+## 🚀 Unterstützte MCUs
 
-Das Projekt besteht aus einer Kernbibliothek (`RS485SecureStack`) und verschiedenen Arduino-Sketches, die die verschiedenen Node-Typen repräsentieren.
+Die Wahl des richtigen Mikrocontrollers ist entscheidend für die Leistungsfähigkeit und die Sicherheitsmerkmale des Stacks, da dieser dedizierte Hardware-Kryptographie-Beschleuniger nutzt.
 
-### RS485SecureStack Bibliothek
+Die folgende Tabelle gibt eine Übersicht über die Eignung verschiedener MCU-Familien für dieses Projekt, bewertet auf einer Skala von 0 bis 1 (wobei 1 die beste Bewertung darstellt):
 
-Dies ist die C++-Bibliothek im `src/` Ordner, die die grundlegenden Funktionen für die gesicherte RS485-Kommunikation bereitstellt:
+| MCU-Familie                  | Wirtschaftlichkeit (0-1) | Eignung für sichere RS485 (0-1)¹ | Arduino Ecosystem Unterstützung (0-1) | Anmerkungen                                                                                                                                              |
+| :--------------------------- | :----------------------- | :------------------------------- | :------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **ESP32 (Classic, S, C)** | **1.0** | **1.0** | **1.0** | **Top-Empfehlung.** Beste Kombination aus Kosten, Leistung und einfacher Weiterentwicklung Ihrer bestehenden Codebasis.                                    |
+| STMicroelectronics STM32     | 0.7                      | 1.0                              | 0.9                                    | Sehr leistungsfähig, exzellente Krypto-Hardware, aber höherer Portierungsaufwand für Ihren Code.                                                         |
+| Microchip SAM                | 0.7                      | 0.95                             | 0.7                                    | Gute Krypto-Hardware, speziell SAM D51. Portierungsaufwand nötig.                                                                                       |
+| NXP i.MX RT (z.B. Teensy)    | 0.5                      | 1.0                              | 0.8                                    | Sehr hohe Performance und Krypto-Hardware. Boards (Teensy) sind teurer, Portierung notwendig.                                                          |
+| Raspberry Pi RP23xx          | 0.7                      | 0.9                              | 0.7                                    | Neuere Serie mit Hardware-Krypto. Gutes Potenzial, aber noch jung im Vergleich zu etablierten MCUs. Portierung nötig.                                      |
+| Nordic Semiconductor nRF52/53 | 0.65                     | 0.75                             | 0.7                                    | Hauptfokus auf Wireless (BLE). Krypto-Hardware (AES/SHA) vorhanden, aber primär für drahtlose Protokolle optimiert; HMAC könnte mehr Software-Anteil haben. |
+| Raspberry Pi RP2040          | 0.6                      | 0.3                              | 0.9                                    | **Nicht empfohlen** für dieses Projekt. Keine Hardware-Krypto-Beschleunigung (AES/SHA/HMAC), was Performance und Sicherheit stark beeinträchtigt.          |
 
-  * Initialisierung der Hardware-Serial für RS485.
-  * Implementierung des Sende- und Empfangsmechanismus mit Preamble, Header, Payload und Trailer.
-  * AES-128-Ver-/Entschlüsselung der Payloads.
-  * HMAC-Generierung und -Verifikation für jedes Paket.
-  * ACK/NACK-Handshake-Mechanismus.
-  * Interne Verwaltung der Baudrate und Session Keys.
+---
+¹ **Eignung für sichere RS485** bezieht sich auf die Verfügbarkeit von Hardware-Beschleunigern für AES, SHA und HMAC sowie geeigneten UART-Schnittstellen.
 
-### Node-Typen (Arduino Sketches)
+**Begründung für die Wirtschaftlichkeit:** Die "Wirtschaftlichkeit" berücksichtigt nicht nur den reinen Chip-Preis, sondern auch die **Entwicklungskosten**. Da Sie bereits eine funktionierende ESP32-Codebasis haben, ist die Weiterführung auf dieser Plattform die mit Abstand kostengünstigste Option in Bezug auf Zeit und Aufwand. Eine Umstellung auf eine andere MCU-Familie würde erhebliche Umschreibungs- und Testkosten verursachen, die potenzielle Hardware-Einsparungen (falls vorhanden) bei weitem übersteigen würden.
 
-Im `poc/` Ordner findest du die Implementierungen der verschiedenen Nodes:
+## 📦 Kernkomponenten & Bibliotheken
 
-#### 1\. Scheduler (Master)
+Der `RS485SecureStack` baut auf Standard-Arduino-Bibliotheken und spezialisierten Krypto-Bibliotheken auf:
 
-`scheduler_main_esp32.ino`
+* `RS485SecureStack.h` / `RS485SecureStack.cpp`: Die Hauptimplementierung des Kommunikationsstacks.
+* `HardwareSerial.h`: Für die RS485-Kommunikation über eine der Hardware-UART-Schnittstellen des MCUs (z.B. `Serial1`, `Serial2`).
+* `Crypto.h`, `AES.h`, `HMAC.h`, `SHA256.h`: Diese Bibliotheken stellen die Schnittstellen zu den Hardware-Kryptographie-Engines des ESP32 bereit. Sie sind entscheidend für die Leistung und Sicherheit von AES128-Verschlüsselung, SHA256-Hashing und HMAC-Generierung.
+* `credantials.h`: Eine separate Datei (aus Sicherheitsgründen nicht Teil des Repositories), die den `MASTER_KEY` enthält. Dieser Schlüssel muss auf *allen* Geräten im Netzwerk identisch sein.
+* `Adafruit_GFX.h`, `Adafruit_ST7789.h` (für `bus_monitor_esp32.ino`): Werden für die Ansteuerung des TFT-Displays auf dem LilyGo T-Display S3 verwendet.
 
-  * **Rolle:** Der zentrale Dirigent des RS485-Busses.
-  * **Aufgaben:**
-      * Verwaltet das gesamte Netzwerk.
-      * Vergibt "Sendeerlaubnis" (Token) an Submaster.
-      * Führt dynamisches Rekeying durch (verteilt neue Session Keys).
-      * Implementiert die automatische Baudraten-Einmessung und optimiert die Bus-Baudrate für alle Teilnehmer.
-      * Überwacht die Fehlerraten der Kommunikation.
-      * Sendet seinen Master-Heartbeat.
-      * **Kritische Safety:** Erkennt andere Master auf dem Bus und stoppt alle Operationen, um Bus-Kollisionen und inkonsistente Zustände zu verhindern.
+## 🛠️ Hardware-Setup
 
-#### 2\. Submaster
+Für den Betrieb des `RS485SecureStack` benötigen Sie:
 
-`submaster_main_esp32.ino`
-
-  * **Rolle:** Intelligenter Knoten, der unter der Kontrolle des Schedulers steht. Kann selbst Anfragen an Clients senden.
-  * **Aufgaben:**
-      * Empfängt Sendeerlaubnis vom Scheduler.
-      * Kommuniziert mit Clients in seinem Segment.
-      * Reagiert auf Baudraten-Set-Anweisungen des Schedulers.
-      * Überwacht den Master-Heartbeat und geht in einen passiven Zustand, wenn der Master ausfällt.
-      * Aktualisiert seine Session Keys nach Anweisung des Schedulers.
-
-#### 3\. Client
-
-`client_main_esp32.ino`
-
-  * **Rolle:** Passiver Endknoten, der auf Anfragen von Submastern oder dem Scheduler reagiert.
-  * **Aufgaben:**
-      * Antwortet auf spezifische Anfragen mit Daten oder Aktionen.
-      * Reagiert auf Baudraten-Set-Anweisungen des Schedulers.
-      * Überwacht den Master-Heartbeat und geht in einen passiven Zustand, wenn der Master ausfällt.
-      * Aktualisiert seine Session Keys nach Anweisung des Schedulers.
-
-#### 4\. Bus-Monitor
-
-`bus_monitor_esp32.ino`
-
-  * **Rolle:** Ein passiver Beobachter des Bus-Verkehrs.
-  * **Aufgaben:**
-      * **Muss den MASTER\_KEY kennen**, um alle Payloads entschlüsseln zu können.
-      * Lauscht dem gesamten Bus-Verkehr.
-      * Versteht alle Protokollnachrichten (Heartbeat, Baudrate-Set, Key-Update).
-      * Zeigt Bus-Status (Master-Präsenz, Baudrate, Key ID, Fehlerzähler) im "Dashboard-Modus" auf einem TFT-Display und seriell an.
-      * Analysiert Traffic-Statistiken (Pakete/Sekunde, Bytes/Sekunde) im "Traffic-Modus" auf TFT und seriell.
-      * Bietet einen detaillierten "Debug-Modus", der alle empfangenen Pakete mit entschlüsseltem Payload und Metadaten seriell ausgibt.
-      * Passt seine Baudrate automatisch an die des Busses an.
-
------
+* **ESP32-basierte Entwicklungsboards:** Beliebige Boards der ESP32-, ESP32-S- oder ESP32-C-Serie sind geeignet. Beispiele: ESP32-DevKitC, ESP32-C3-DevKitM-1, LilyGo T-Display S3.
+* **RS485 Transceiver Modul:** Ein Konverter von TTL (UART) zu RS485-Signalen, z.B. Module mit dem MAX485-Chip.
+* **DE/RE Pin:** Ein GPIO-Pin des ESP32, der den `DE` (Driver Enable) und `RE` (Receiver Enable) Pins des RS485-Transceivers steuert. Dieser Pin muss beim Senden auf HIGH und beim Empfangen auf LOW gesetzt werden. (Beispiel: `const int RS485_DE_RE_PIN = 3;`).
+* **UART-Schnittstelle:** Eine der Hardware-UARTs des ESP32 (z.B. `Serial1`, `Serial2`). Die `Serial` (UART0) kann auch verwendet werden, aber Vorsicht bei Konflikten mit der USB-Serial-Ausgabe für Debugging. Es wird dringend empfohlen, eine separate UART für RS485 zu verwenden.
+    * Beispiel: `HardwareSerial& rs485Serial = Serial1;`
+* **Für den Bus-Monitor:** Zusätzlich ein TFT-Display, z.B. das ST7789, wie es auf dem LilyGo T-Display S3 zu finden ist.
 
 ## 🧪 Testkonfiguration und Anwendungsfall (Reale Welt)
 
@@ -152,36 +90,35 @@ Um die Funktionalität, Sicherheit und Robustheit des RS485SecureStack zu demons
 
 ### Systemübersicht (Graphic)
 
-```
 +----------------+                   +----------------+
 |    Scheduler   | Master (Address 0)|                |
 |  ESP32-C3 Dev. |<----------------->|   RS485 Bus    |
 |     (UART0)    |                   |  (Twisted Pair)|
 +----------------+                   +----------------+
-        |                                       |
-        |                                       |
-        V                                       V
+|                                       |
+|                                       |
+V                                       V
 +----------------+                       +----------------+
 |    Submaster 1 | (Address 1)           |    Submaster 2 | (Address 2)
 |  ESP32-C3 Dev. |<--------------------->|  ESP32-C3 Dev. |
 |     (UART0)    |                       |     (UART0)    |
 +----------------+                       +----------------+
-        |                                       |
-        |                                       |
-        V                                       V
+|                                       |
+|                                       |
+V                                       V
 +----------------+                       +----------------+
 |    Client 11   | (Address 11)          |    Client 12   | (Address 12)
 |  ESP32-C3 Dev. |<--------------------->|  ESP32-C3 Dev. |
 |     (UART0)    |                       |     (UART0)    |
 +----------------+                       +----------------+
-                                                |
-                                                V
-                                       +----------------+
-                                       |   Bus-Monitor  | (Address 254)
-                                       | LilyGo T-Disp. S3|
-                                       |  (TFT + UART0) |
-                                       +----------------+
-```
+|
+V
++----------------+
+|   Bus-Monitor  | (Address 254)
+| LilyGo T-Disp. S3|
+|  (TFT + UART0) |
++----------------+
+
 
 *(Hinweis: Die Pfeile auf dem RS485 Bus symbolisieren bidirektionale Kommunikation. Jeder Node ist über einen RS485 Transceiver mit dem Bus verbunden.)*
 
@@ -192,23 +129,23 @@ Um die Funktionalität, Sicherheit und Robustheit des RS485SecureStack zu demons
 | **5** | **ESP32-C3 Development Board** | Mikrocontroller für Master, Submaster und Clients. Geringer Stromverbrauch, Hardware-Krypto.               | ESP32-C3-DevKitM-1, NodeMCU-32C3, ESP32-C3 Supermini           |
 | **1** | **LilyGo T-Display S3** | ESP32-S3 Entwicklungsboard mit integriertem ST7789 170x320 TFT-Display für den Bus-Monitor.              | LilyGo T-Display-S3 (mit 170x320 ST7789 TFT)                  |
 | **6** | **RS485 Transceiver Modul (HW-159)** | Modul mit MAX485-Chip zur Umwandlung von TTL-Signalen in RS485-Signale und umgekehrt. Kompatibel mit 3.3V Logik. | HW-159 MAX485 Modul (oft als "MAX485 TTL zu RS485 Konverter Modul" gelistet) |
-| **\~10m**| **Twisted-Pair Kabel** | Für die RS485-Busleitung (A und B Leitungen). Abgeschirmtes Kabel (z.B. CAT5/6) empfohlen für geringere Störungen. | Cat5e/Cat6 Netzwerkkabel                                     |
+| **~10m**| **Twisted-Pair Kabel** | Für die RS485-Busleitung (A und B Leitungen). Abgeschirmtes Kabel (z.B. CAT5/6) empfohlen für geringere Störungen. | Cat5e/Cat6 Netzwerkkabel                                     |
 | **6** | **Micro-USB Kabel** | Zur Stromversorgung und Programmierung der ESP32 Boards.                                                 | Standard Micro-USB Kabel                                      |
 | **6** | **Breadboard / Steckplatine** | Zum einfachen Aufbau der Schaltung (ESP32 + RS485 Modul).                                                | Beliebiges Standard-Breadboard                                |
-| **\~50** | **Jumper Wires (m-f, m-m)** | Für die Verbindungen auf dem Breadboard und zwischen Modulen.                                             | Verschiedene Längen und Typen (Male-Female, Male-Male)      |
+| **~50** | **Jumper Wires (m-f, m-m)** | Für die Verbindungen auf dem Breadboard und zwischen Modulen.                                             | Verschiedene Längen und Typen (Male-Female, Male-Male)      |
 | **2** | **120 Ohm Abschlusswiderstand** | Optional, aber empfohlen für lange Busleitungen oder hohe Baudraten zur Impedanzanpassung. An beiden Enden des Busses anbringen. | 1/4W Widerstand                                               |
 
 ### Verdrahtungshinweise (Allgemein)
 
 Für jeden ESP32 (C3 und S3):
 
-  * **ESP32 TX** an **MAX485 DI**
-  * **ESP32 RX** an **MAX485 RO**
-  * **ESP32 GPIO (DE/RE)** an **MAX485 DE & RE** (oft gebrückt) - dieser Pin muss im Sketch entsprechend gesetzt werden (HIGH für Senden, LOW für Empfangen). In unserem `RS485SecureStack` wurde das noch nicht direkt im Stack implementiert. Für Tests kann man ihn fest auf LOW lassen und nur lauschen oder manuell für den Master steuern. **Für eine funktionierende Sendefähigkeit des Master/Submaster/Clients muss dieser Pin jedoch vom Sketch gesteuert werden\!**
-  * **MAX485 VCC** an **ESP32 3.3V**
-  * **MAX485 GND** an **ESP32 GND**
-  * **MAX485 A** an **RS485 Bus A**
-  * **MAX485 B** an **RS485 Bus B**
+* **ESP32 TX** an **MAX485 DI**
+* **ESP32 RX** an **MAX485 RO**
+* **ESP32 GPIO (DE/RE)** an **MAX485 DE & RE** (oft gebrückt) - dieser Pin muss im Sketch entsprechend gesetzt werden (HIGH für Senden, LOW für Empfangen). In unserem `RS485SecureStack` wurde das noch nicht direkt im Stack implementiert. Für Tests kann man ihn fest auf LOW lassen und nur lauschen oder manuell für den Master steuern. **Für eine funktionierende Sendefähigkeit des Master/Submaster/Clients muss dieser Pin jedoch vom Sketch gesteuert werden!**
+* **MAX485 VCC** an **ESP32 3.3V**
+* **MAX485 GND** an **ESP32 GND**
+* **MAX485 A** an **RS485 Bus A**
+* **MAX485 B** an **RS485 Bus B**
 
 Alle "A"-Pins der MAX485 Module werden miteinander verbunden, ebenso alle "B"-Pins.
 Der RS485-Bus sollte als eine durchgehende Linie (Daisy-Chain) und nicht als Stern-Topologie verdrahtet werden.
@@ -216,44 +153,38 @@ Der RS485-Bus sollte als eine durchgehende Linie (Daisy-Chain) und nicht als Ste
 ### Test-Use Cases
 
 1.  **Systemstart & Baudraten-Einmessung:**
-
-      * Alle Nodes starten auf einer Standard-Baudrate (z.B. 9600 bps).
-      * Der Scheduler führt die automatische Einmessung durch, testet verschiedene Baudraten und setzt die optimale Rate für alle Nodes.
-      * **Monitor:** Beobachtet den gesamten Einmessprozess, zeigt die Baudratenwechsel und die resultierende optimale Rate an.
+    * Alle Nodes starten auf einer Standard-Baudrate (z.B. 9600 bps).
+    * Der Scheduler führt die automatische Einmessung durch, testet verschiedene Baudraten und setzt die optimale Rate für alle Nodes.
+    * **Monitor:** Beobachtet den gesamten Einmessprozess, zeigt die Baudratenwechsel und die resultierende optimale Rate an.
 
 2.  **Regelmäßiger Betrieb:**
-
-      * Der Scheduler sendet kontinuierlich seinen Heartbeat.
-      * Der Scheduler vergibt Sendeerlaubnis an Submaster, die daraufhin mit Clients kommunizieren.
-      * Clients antworten auf Anfragen.
-      * **Monitor (Dashboard/Traffic-Modus):** Zeigt die Master-Präsenz, aktuelle Baudrate, Key ID, Pakete/Sekunde, Bytes/Sekunde und Fehlerraten an.
+    * Der Scheduler sendet kontinuierlich seinen Heartbeat.
+    * Der Scheduler vergibt Sendeerlaubnis an Submaster, die daraufhin mit Clients kommunizieren.
+    * Clients antworten auf Anfragen.
+    * **Monitor (Dashboard/Traffic-Modus):** Zeigt die Master-Präsenz, aktuelle Baudrate, Key ID, Pakete/Sekunde, Bytes/Sekunde und Fehlerraten an.
 
 3.  **Rekeying-Prozess:**
-
-      * Nach einer definierten Zeit initiiert der Scheduler ein Rekeying und verteilt eine neue Key ID und den entsprechenden Session Key an alle Nodes.
-      * **Monitor:** Zeigt den Wechsel der Key ID an und verifiziert, dass die Kommunikation mit dem neuen Schlüssel erfolgreich entschlüsselt wird.
+    * Nach einer definierten Zeit initiiert der Scheduler ein Rekeying und verteilt eine neue Key ID und den entsprechenden Session Key an alle Nodes.
+    * **Monitor:** Zeigt den Wechsel der Key ID an und verifiziert, dass die Kommunikation mit dem neuen Schlüssel erfolgreich entschlüsselt wird.
 
 4.  **Fehlerfall: Baudrate verschlechtert sich (Simulation):**
-
-      * Während des Betriebs wird die Qualität der Busleitung absichtlich verschlechtert (z.B. durch Entfernen des Abschlusswiderstands, oder durch starke externe Störquelle).
-      * Der Master registriert erhöhte Fehlerraten (HMAC-Fehler, fehlende ACKs).
-      * Idealerweise initiiert der Master eine erneute Baudraten-Einmessung und reduziert die Baudrate, um die Kommunikation wiederherzustellen.
-      * **Monitor:** Zeigt die erhöhten Fehlerraten und den Baudraten-Abstieg an.
+    * Während des Betriebs wird die Qualität der Busleitung absichtlich verschlechtert (z.B. durch Entfernen des Abschlusswiderstands, oder durch starke externe Störquelle).
+    * Der Master registriert erhöhte Fehlerraten (HMAC-Fehler, fehlende ACKs).
+    * Idealerweise initiiert der Master eine erneute Baudraten-Einmessung und reduziert die Baudrate, um die Kommunikation wiederherzustellen.
+    * **Monitor:** Zeigt die erhöhten Fehlerraten und den Baudraten-Abstieg an.
 
 5.  **Safety-Test: Anderer Master betritt den Bus:**
-
-      * Ein zweiter ESP32-C3, ebenfalls als "Scheduler" geflasht (mit anderer Adresse als 0, aber dem gleichen Master Key), wird an den Bus angeschlossen.
-      * Dieser "Rogue Master" beginnt ebenfalls, Heartbeats zu senden.
-      * Der legitime Scheduler (Adresse 0) sollte den Heartbeat des Rogue Masters erkennen.
-      * **Legitimer Scheduler:** Geht in den "DANGER MODE" und stoppt alle aktiven Sendeoperationen. Serielle Ausgabe und/oder LED-Anzeige signalisiert den Fehler.
-      * **Submaster/Clients:** Überwachen weiterhin den Heartbeat des *offiziellen* Schedulers (Adresse 0). Falls dieser aufhört, aktiv zu sein, gehen sie in ihren passiven Zustand. Falls der Rogue Master ebenfalls auf Adresse 0 eingestellt wäre (was in der echten Welt zu Adresskonflikten führt), würden die Nodes den Heartbeat empfangen, aber der legitime Master würde immer noch den Konflikt bemerken.
-      * **Monitor (Dashboard/Debug-Modus):** Zeigt deutlich die Erkennung des unerwarteten Master-Heartbeats und dessen Absenderadresse an.
+    * Ein zweiter ESP32-C3, ebenfalls als "Scheduler" geflasht (mit anderer Adresse als 0, aber dem gleichen Master Key), wird an den Bus angeschlossen.
+    * Dieser "Rogue Master" beginnt ebenfalls, Heartbeats zu senden.
+    * Der legitime Scheduler (Adresse 0) sollte den Heartbeat des Rogue Masters erkennen.
+    * **Legitimer Scheduler:** Geht in den "DANGER MODE" und stoppt alle aktiven Sendeoperationen. Serielle Ausgabe und/oder LED-Anzeige signalisiert den Fehler.
+    * **Submaster/Clients:** Überwachen weiterhin den Heartbeat des *offiziellen* Schedulers (Adresse 0). Falls dieser aufhört, aktiv zu sein, gehen sie in ihren passiven Zustand. Falls der Rogue Master ebenfalls auf Adresse 0 eingestellt wäre (was in der echten Welt zu Adresskonflikten führt), würden die Nodes den Heartbeat empfangen, aber der legitime Master würde immer noch den Konflikt bemerken.
+    * **Monitor (Dashboard/Debug-Modus):** Zeigt deutlich die Erkennung des unerwarteten Master-Heartbeats und dessen Absenderadresse an.
 
 6.  **Sicherheits-Test: Angreifer versucht zu Spoofen/Manipulieren:**
-
-      * Ein externer ESP32 mit einer eigenen, *falschen* Implementierung versucht, Pakete in den Bus einzuschleusen, die nicht mit dem korrekten HMAC signiert sind.
-      * **Alle Nodes:** Empfangen die Pakete, aber die HMAC-Prüfung schlägt fehl, und die Pakete werden verworfen.
-      * **Monitor (Debug-Modus):** Zeigt die empfangenen Pakete an, aber mit dem Hinweis "HMAC\_OK: NO", was die erfolgreiche Abwehr der Manipulation demonstriert.
+    * Ein externer ESP32 mit einer eigenen, *falschen* Implementierung versucht, Pakete in den Bus einzuschleusen, die nicht mit dem korrekten HMAC signiert sind.
+    * **Alle Nodes:** Empfangen die Pakete, aber die HMAC-Prüfung schlägt fehl, und die Pakete werden verworfen.
+    * **Monitor (Debug-Modus):** Zeigt die empfangenen Pakete an, aber mit dem Hinweis "HMAC_OK: NO", was die erfolgreiche Abwehr der Manipulation demonstriert.
 
 Dieses umfassende Setup ermöglicht eine realitätsnahe Validierung der robusten und sicheren Kommunikationsfähigkeiten des RS485SecureStack-Projekts.
 
@@ -303,7 +234,7 @@ Dieses umfassende Setup ermöglicht eine realitätsnahe Validierung der robusten
 
 ### Lizenz
 
-Dieses Projekt ist unter der **MIT-Lizenz** lizenziert. Details finden Sie in der `LICENSE`-Datei im Root-Verzeichnis dieses Repositories.
+Dieses Projekt ist unter der **MIT-Lizenz** lizenziert. Details finden Sie in der [LICENSE.md](LICENSE.md)-Datei im Root-Verzeichnis dieses Repositories.
 
 ### Disclaimer
 
@@ -314,3 +245,9 @@ Dieses Projekt ist unter der **MIT-Lizenz** lizenziert. Details finden Sie in de
 Die Autoren übernehmen keine Haftung für Schäden oder Verluste, die durch die Verwendung dieser Software entstehen. Die Nutzung erfolgt auf eigenes Risiko.
 
 ---
+
+## 👨‍💻 Autor & Copyright
+
+* **Autor:** Thomas Walloschke
+* **Kontakt:** artkeller@gmx.de
+* **Copyright:** © 2025 Thomas Walloschke. Alle Rechte vorbehalten.
