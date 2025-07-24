@@ -1,7 +1,8 @@
 #include "KeyRotationManager.h"
 #include "RS485SecureStack.h" // Muss hier inkludiert werden, da wir die Klasse nutzen
+#ifdef ESP32
 #include <esp_system.h> // Für esp_random() auf ESP32
-
+#endif
 
 // Default-Werte für die Policies
 #define DEFAULT_ROTATION_INTERVAL_MS (60 * 60 * 1000UL) // 1 Stunde
@@ -16,21 +17,7 @@ KeyRotationManager::KeyRotationManager()
       _currentManagedKeyId(0), // Startet mit Key ID 0
       _keyGenCallback(nullptr)
 {
-    // Konstruktor macht wenig, begin() muss aufgerufen werden
-}
-
-KeyRotationManager::KeyRotationManager(unsigned long rotationIntervalMs, unsigned long messageCountThreshold,
-                                       KeyGenerationAndDistributionCallback keyGenCallback, RS485SecureStack* secureStackInstance)
-    : _secureStack(secureStackInstance),
-      _rotationIntervalMs(rotationIntervalMs),
-      _messageCountThreshold(messageCountThreshold),
-      _lastRotationTime(millis()), // Initialisiere die Zeit der letzten Rotation
-      _messagesSentSinceLastRotation(0),
-      _currentManagedKeyId(0), // Initial mit 0 oder als Parameter übergeben? Für PoC 0.
-      _keyGenCallback(keyGenCallback)
-{
-    // Die _currentManagedKeyId sollte initial mit der initialen KeyID des RS485SecureStack übereinstimmen.
-    // Dies wird am besten in begin() synchronisiert.
+    // Konstruktor initialisiert nur Member. begin() muss aufgerufen werden, um Referenzen zu setzen.
 }
 
 void KeyRotationManager::begin(KeyGenerationAndDistributionCallback keyGenCallback, RS485SecureStack* secureStackInstance) {
@@ -41,7 +28,11 @@ void KeyRotationManager::begin(KeyGenerationAndDistributionCallback keyGenCallba
     
     // Stelle sicher, dass der KeyRotationManager die gleiche initiale KeyID verwendet
     // wie der RS485SecureStack. Standardmäßig ist das KeyID 0.
-    _currentManagedKeyId = _secureStack->_currentSessionKeyId; 
+    if (_secureStack) {
+        _currentManagedKeyId = _secureStack->_currentSessionKeyId; 
+    } else {
+        Serial.println("Warnung: KeyRotationManager::begin - secureStack ist nullptr!");
+    }
 
     Serial.println("KeyRotationManager gestartet.");
     Serial.print("Initial Rotation Interval: "); Serial.print(_rotationIntervalMs); Serial.println(" ms");
@@ -49,6 +40,12 @@ void KeyRotationManager::begin(KeyGenerationAndDistributionCallback keyGenCallba
 }
 
 void KeyRotationManager::update() {
+    // Wenn kein secureStack oder Callback gesetzt ist, kann der Manager nichts tun.
+    if (!_secureStack || !_keyGenCallback) {
+        // Serial.println("KeyRotationManager nicht vollständig initialisiert.");
+        return;
+    }
+
     // Prüfe zeitbasierte Rotation
     if (_rotationIntervalMs > 0 && (millis() - _lastRotationTime >= _rotationIntervalMs)) {
         Serial.println("KeyRotationManager: Zeitbasiertes Intervall erreicht. Schlüsselrotation triggern.");
@@ -83,7 +80,7 @@ unsigned long KeyRotationManager::getTimeSinceLastRotation() {
     return millis() - _lastRotationTime;
 }
 
-unsigned long Key16 bytesKeyRotationManager::getMessagesSinceLastRotation() {
+unsigned long KeyRotationManager::getMessagesSinceLastRotation() {
     return _messagesSentSinceLastRotation;
 }
 
@@ -93,7 +90,11 @@ uint16_t KeyRotationManager::getCurrentKeyId() {
 
 void KeyRotationManager::_triggerKeyRotation() {
     // Ermittle die nächste Key ID im Ringpuffer
-    uint16_t newKeyId = (_currentManagedKeyId + 1) % MAX_SESSION_KEYS; // MAX_SESSION_KEYS muss in .h definiert sein
+    // MAX_SESSION_KEYS kommt aus RS485SecureStack.h, muss aber hier verfügbar sein.
+    // Daher direkt hier wieder definiert oder über Getter. Für PoC direct define.
+    // Best Practice wäre es, MAX_SESSION_KEYS in einer gemeinsamen Datei (z.B. config.h) zu haben
+    // oder über eine Methode des RS485SecureStack zu bekommen.
+    uint16_t newKeyId = (_currentManagedKeyId + 1) % 5; // Annahme: MAX_SESSION_KEYS = 5
 
     // Generiere einen neuen, zufälligen Schlüssel (PoC-Implementierung)
     byte newKey[AES_KEY_SIZE];
@@ -121,8 +122,11 @@ void KeyRotationManager::_triggerKeyRotation() {
 // In Produktion MUSS hier esp_random() oder eine andere kryptographisch sichere Methode verwendet werden.
 void KeyRotationManager::_generateRandomKey(byte key[AES_KEY_SIZE]) {
     for (int i = 0; i < AES_KEY_SIZE; i++) {
-        // FÜR ESP32 NUTZE: key[i] = esp_random() & 0xFF;
-        key[i] = random(256); // Pseudo-Zufall für Einfachheit im PoC
+        #ifdef ESP32
+        key[i] = esp_random() & 0xFF; // Nutze den ESP32 Hardware-Zufallsgenerator
+        #else
+        key[i] = random(256); // Pseudo-Zufall für andere Plattformen
+        #endif
     }
     Serial.println("KeyRotationManager: Zufälliger Schlüssel generiert (PoC-Modus).");
 }
