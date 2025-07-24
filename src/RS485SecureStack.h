@@ -3,12 +3,16 @@
 
 #include <Arduino.h>
 #include <HardwareSerial.h>
-
 // Include spezifische Crypto Bibliotheken für ESP32 Hardware-Beschleunigung
 #include <Crypto.h>
 #include <AES.h>    // Für AES128
 #include <SHA256.h> // Für SHA256 Hashes
 #include <HMAC.h>   // Für HMAC-SHA256
+
+// --- Forward-Deklaration der KeyRotationManager Klasse ---
+// Wird benötigt, da RS485SecureStack einen Zeiger auf diese Klasse als Member hat,
+// aber KeyRotationManager auch RS485SecureStack als Zeiger haben kann.
+class KeyRotationManager; 
 
 // --- Define RS485 Protocol Constants ---
 // Diese Konstanten definieren das physikalische Rahmenprotokoll
@@ -119,6 +123,9 @@ public:
     // oder von Clients, um neue Schlüssel vom Master zu empfangen und zu speichern.
     void setSessionKey(uint16_t keyId, const byte sessionKey[AES_KEY_SIZE]);
 
+    // NEU: Setzt den KeyRotationManager für diese Instanz
+    void setKeyRotationManager(KeyRotationManager* manager);
+
     // --- Klassenmember für Nachrichtentypen (saubere C++-Konstanten) ---
     // Diese sind public zugänglich (z.B. RS485SecureStack::MSG_TYPE_DATA)
     // und leiten ihre Werte von den oben definierten #define TOKENs ab.
@@ -161,37 +168,3 @@ private:
     // Empfangs-Puffer und Zustandsmaschinen-Variablen für die Paketverarbeitung
     byte _receiveBuffer[RECEIVE_BUFFER_SIZE]; // Puffer für eingehende, gestuffte Bytes
     size_t _receiveBufferIdx;                 // Aktueller Index im Empfangspuffer
-    bool _receivingPacket;                    // Flag: Befindet sich der Parser in einem Paket?
-    bool _escapeNextByte;                     // Flag: Ist das nächste Byte ein escaped Byte?
-    
-    // Puffer für das ungestuffte, rohe logische Paket (für Debugging und HMAC-Berechnung)
-    byte _currentPacketRaw[MAX_LOGICAL_PACKET_SIZE]; 
-    size_t _currentPacketRawLen;
-
-    // --- Interne Helferfunktionen (private Methoden) ---
-
-    // Sendet Rohdaten über die RS485-Schnittstelle (kümmert sich um DE/RE Pin, falls gesetzt)
-    void _sendRaw(const byte* data, size_t len);
-    
-    // Baut ein sicheres Paket zusammen (Header, verschlüsselte Payload, HMAC)
-    // und sendet es über den Bus (inkl. Byte-Stuffing und Rahmen).
-    bool _buildAndSendPacket(byte targetAddress, char msgType, const byte* payload, size_t payloadLen, uint16_t keyId, const byte iv[IV_SIZE]);
-    
-    // Verarbeitet ein vollständig empfangenes, ungestufftes Logisches Paket.
-    // Führt HMAC-Verifikation, Entschlüsselung und Callback-Aufruf durch.
-    void _processReceivedPacket(const byte* packet, size_t len);
-    
-    // Verschlüsselt die Klartext-Nutzlast mit AES-128-CBC und PKCS7-Padding.
-    size_t _encryptPayload(const byte* plain, size_t plainLen, byte* encrypted, const byte key[AES_KEY_SIZE], byte iv[IV_SIZE]);
-    // Entschlüsselt die verschlüsselte Nutzlast und entfernt PKCS7-Padding.
-    size_t _decryptPayload(const byte* encrypted, size_t encryptedLen, byte* decrypted, const byte key[AES_KEY_SIZE], const byte iv[IV_SIZE]);
-
-    // Implementierung des Byte-Stuffings (DLE-basiert mit XOR-Maske).
-    size_t _stuffBytes(const byte* input, size_t inputLen, byte* output);
-    // Implementierung des Byte-Unstuffings (DLE-basiert mit XOR-Maske).
-    size_t _unstuffBytes(const byte* input, size_t inputLen, byte* output);
-
-    bool _ackEnabled; // Flag, ob dieser Knoten ACKs/NACKs sendet
-};
-
-#endif // RS485_SECURE_STACK_H
