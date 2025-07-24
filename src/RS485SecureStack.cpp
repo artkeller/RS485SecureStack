@@ -1,4 +1,5 @@
 #include "RS485SecureStack.h"
+#include "KeyRotationManager.h" // NEU: KeyRotationManager inkludieren
 #include <HardwareSerial.h> // Wird für HardwareSerial::begin() etc. benötigt
 #include <Crypto.h>         // Basis Crypto API für ESP32
 #include <AES.h>            // Spezifische AES Implementierung für ESP32
@@ -26,7 +27,8 @@ RS485SecureStack::RS485SecureStack(HardwareSerial& serial, byte localAddress, co
       _currentPacketSource(0),       // Source der letzten Nachricht
       _currentPacketTarget(0),       // Target der letzten Nachricht
       _currentPacketMsgType(0),      // Typ der letzten Nachricht
-      _deRePin(-1)                   // DE/RE Pin initial auf -1 (nicht gesetzt)
+      _deRePin(-1),                   // DE/RE Pin initial auf -1 (nicht gesetzt)
+      _keyRotationManager(nullptr) // NEU: Initialisiere den Manager-Zeiger auf nullptr
 {
     // Kopiere den Pre-Shared Master Authentication Key in das private Member-Array
     memcpy(_masterKey, masterKey, HMAC_KEY_SIZE);
@@ -58,7 +60,7 @@ RS485SecureStack::RS485SecureStack(HardwareSerial& serial, byte localAddress, co
 void RS485SecureStack::begin(long baudRate) {
     _rs485Serial.begin(baudRate);
     // Optional: Konfiguration von RX/TX Pins bei Nicht-Standard-UARTs (z.B. Serial1/Serial2)
-    // _rs485Serial.setPins(RX_PIN, TX_PIN); 
+    // _rs458Serial.setPins(RX_PIN, TX_PIN); 
 
     if (_deRePin != -1) {
         pinMode(_deRePin, OUTPUT);
@@ -114,7 +116,11 @@ void RS485SecureStack::processIncoming() {
             if (_receiveBufferIdx > 0) {
                 // Verarbeite das ungestuffte Paket im _receiveBuffer
                 size_t unstuffedLen = _unstuffBytes(_receiveBuffer, _receiveBufferIdx, _currentPacketRaw);
-                _processReceivedPacket(_currentPacketRaw, unstuffedLen);
+                if (unstuffedLen > 0) { // Nur verarbeiten, wenn Unstuffing erfolgreich war
+                    _processReceivedPacket(_currentPacketRaw, unstuffedLen);
+                } else {
+                    Serial.println("Fehler: Unstuffing des Pakets fehlgeschlagen.");
+                }
             }
             _receiveBufferIdx = 0; // Puffer für nächstes Paket zurücksetzen
             continue;
@@ -150,9 +156,8 @@ void RS485SecureStack::_sendRaw(const byte* data, size_t len) {
     _rs485Serial.flush(); // Sicherstellen, dass alle Bytes gesendet wurden
 
     // Kurze Pause, um das letzte Byte zu senden, bevor auf Empfang umgeschaltet wird.
-    // Dies hängt von der Baudrate ab. 10 Bits pro Byte.
-    // delayMicroseconds((10UL * len * 1000000UL) / _rs485Serial.baudRate());
-    delay(1); // Eine kleine feste Verzögerung ist oft ausreichend und einfacher
+    // Dies hängt von der Baudrate ab. Eine feste Verzögerung ist hier oft ausreichend.
+    delay(1); 
 
     if (_deRePin != -1) {
         digitalWrite(_deRePin, LOW); // Auf Empfangs-Modus zurückschalten
@@ -175,6 +180,7 @@ bool RS485SecureStack::sendMessage(byte targetAddress, char msgType, const Strin
     // wie `esp_random()` auf ESP32 verwendet werden!
     byte iv[IV_SIZE];
     for (int i = 0; i < IV_SIZE; i++) {
+        // FÜR ESP32 NUTZE: iv[i] = esp_random() & 0xFF;
         iv[i] = random(256); 
     }
 
@@ -188,7 +194,13 @@ bool RS485SecureStack::sendMessage(byte targetAddress, char msgType, const Strin
     }
     
     // Baue das Paket und sende es
-    return _buildAndSendPacket(targetAddress, msgType, encryptedPayload, encryptedLen, _currentSessionKeyId, iv);
+    bool success = _buildAndSendPacket(targetAddress, msgType, encryptedPayload, encryptedLen, _currentSessionKeyId, iv);
+
+    // Nach erfolgreichem Senden die Nachrichtenzahl im KeyRotationManager aktualisieren
+    if (success && _keyRotationManager) {
+        _keyRotationManager->notifyMessageSent();
+    }
+    return success;
 }
 
 // Sendet ein ACK oder NACK
@@ -201,6 +213,7 @@ bool RS485SecureStack::sendAckNack(byte targetAddress, char originalMsgType, boo
     // Generiere einen IV, auch für kleine Payloads
     byte iv[IV_SIZE];
     for (int i = 0; i < IV_SIZE; i++) {
+        // FÜR ESP32 NUTZE: iv[i] = esp_random() & 0xFF;
         iv[i] = random(256); // FÜR PRODUKTION: CSPRNG nutzen!
     }
     
@@ -270,6 +283,11 @@ bool RS485SecureStack::_buildAndSendPacket(byte targetAddress, char msgType, con
     // Führe das Stuffing durch und speichere im Puffer, beginnend nach dem START_BYTE
     size_t stuffedLen = _stuffBytes(tempLogicalPacket, logicalPacketLen, &stuffedPacket[1]);
     
+    if (stuffedLen == 0 && logicalPacketLen > 0) { // Stuffing-Fehler erkannt
+        Serial.println("Fehler: Byte-Stuffing fehlgeschlagen.");
+        return false;
+    }
+
     // Füge das End-Byte nach den gestufften Daten hinzu
     stuffedPacket[1 + stuffedLen] = END_BYTE;
 
@@ -351,7 +369,7 @@ void RS485SecureStack::_processReceivedPacket(const byte* rawPacket, size_t rawL
              _receiveCallback(_currentPacketSource, _currentPacketMsgType, "KEY_MISMATCH");
         }
         // Optional: NACK senden, da wir die Payload nicht verarbeiten können
-        if (_ackEnabled) {
+        if (_ackEnabled && (_currentPacketTarget == _localAddress || _currentPacketTarget == 0xFF)) {
             sendAckNack(_currentPacketSource, _currentPacketMsgType, false);
         }
         return;
@@ -365,7 +383,7 @@ void RS485SecureStack::_processReceivedPacket(const byte* rawPacket, size_t rawL
     if (decryptedLen == 0) {
         Serial.println("Fehler: Entschlüsselung fehlgeschlagen oder ungültiges Padding.");
         // Optional: NACK senden
-        if (_ackEnabled) {
+        if (_ackEnabled && (_currentPacketTarget == _localAddress || _currentPacketTarget == 0xFF)) {
             sendAckNack(_currentPacketSource, _currentPacketMsgType, false);
         }
         return;
@@ -387,8 +405,8 @@ void RS485SecureStack::_processReceivedPacket(const byte* rawPacket, size_t rawL
         _receiveCallback(_currentPacketSource, _currentPacketMsgType, payloadStr);
     }
     
-    // 6. ACK senden (falls aktiviert und alles erfolgreich war)
-    if (_ackEnabled) {
+    // 6. ACK senden (falls aktiviert und alles erfolgreich war und an uns gerichtet)
+    if (_ackEnabled && (_currentPacketTarget == _localAddress || _currentPacketTarget == 0xFF)) {
         sendAckNack(_currentPacketSource, _currentPacketMsgType, true);
     }
 }
@@ -411,6 +429,9 @@ size_t RS485SecureStack::_encryptPayload(const byte* plain, size_t plainLen, byt
         Serial.println("Fehler: Puffer für gepaddete Nutzlast ist zu klein.");
         return 0; // Rückgabe 0 bei Fehler
     }
+
+    // Wenn paddedLen 0 ist, macht die Verschlüsselung keinen Sinn
+    if (paddedLen == 0) return 0;
 
     byte paddedPlain[paddedLen];
     memcpy(paddedPlain, plain, plainLen); // Kopiere Klartext
@@ -436,6 +457,13 @@ size_t RS485SecureStack::_decryptPayload(const byte* encrypted, size_t encrypted
         Serial.println("Fehler: Entschlüsselte Länge ist 0 oder kein Vielfaches der Blockgröße.");
         return 0;
     }
+    
+    // Prüfe auf Pufferüberlauf vor der Entschlüsselung
+    if (encryptedLen > (MAX_RAW_PAYLOAD_SIZE + AES_BLOCK_SIZE)) { // Max mögliche Größe nach Entschlüsselung
+        Serial.println("Fehler: Entschlüsselungspuffer ist zu klein für diese Datenmenge.");
+        return 0;
+    }
+
 
     // Setze AES-Schlüssel und IV und entschlüssele
     _aes.setKey(key, AES_KEY_SIZE);
@@ -446,7 +474,9 @@ size_t RS485SecureStack::_decryptPayload(const byte* encrypted, size_t encrypted
     byte paddingByte = decrypted[encryptedLen - 1]; // Letztes Byte enthält die Anzahl der Padding-Bytes
     
     // Prüfe auf gültigen Padding-Wert
-    if (paddingByte == 0 || paddingByte > AES_BLOCK_SIZE) {
+    // Padding muss zwischen 1 und AES_BLOCK_SIZE liegen
+    // Und die Länge muss mindestens so groß sein wie der Padding-Wert
+    if (paddingByte == 0 || paddingByte > AES_BLOCK_SIZE || paddingByte > encryptedLen) {
         Serial.print("Fehler: Ungültiger Padding-Wert: ");
         Serial.println(paddingByte);
         return 0;
@@ -460,7 +490,22 @@ size_t RS485SecureStack::_decryptPayload(const byte* encrypted, size_t encrypted
         }
     }
     
-    return encryptedLen - paddingByte; // Gibt die tatsächliche Länge der Nutzlast zurück
+    // Die tatsächliche Nutzlastlänge ist die verschlüsselte Länge minus der Padding-Bytes
+    size_t actualPayloadLen = encryptedLen - paddingByte;
+
+    // Optional: Überprüfen, ob die entschlüsselte Länge nicht die maximal erlaubte Klartextgröße überschreitet
+    if (actualPayloadLen > MAX_RAW_PAYLOAD_SIZE) {
+        Serial.print("Warnung: Entschlüsselte Klartextlänge (");
+        Serial.print(actualPayloadLen);
+        Serial.print(") überschreitet MAX_RAW_PAYLOAD_SIZE (");
+        Serial.print(MAX_RAW_PAYLOAD_SIZE);
+        Serial.println("). Daten könnten abgeschnitten werden.");
+        // Hier könntest du entscheiden, ob du einen Fehler zurückgibst (0) oder die abgeschnittenen Daten
+        // weitergibst. Für String-Konvertierung wird nur bis zum Null-Terminator gelesen.
+    }
+
+
+    return actualPayloadLen; // Gibt die tatsächliche Länge der Nutzlast zurück
 }
 
 // Implementiert Byte-Stuffing nach dem DLE-Verfahren mit XOR-Maske
@@ -470,16 +515,20 @@ size_t RS485SecureStack::_stuffBytes(const byte* input, size_t inputLen, byte* o
         // Wenn das Byte ein Steuerzeichen (START, END, ESCAPE) ist,
         // füge das ESCAPE_BYTE und das XOR-Maskierte Originalbyte hinzu.
         if (input[i] == START_BYTE || input[i] == END_BYTE || input[i] == ESCAPE_BYTE) {
+            // Prüfe auf Pufferüberlauf vor dem Hinzufügen von 2 Bytes
+            if (outputIdx + 1 >= SEND_BUFFER_SIZE) { 
+                Serial.println("Fehler: Stuffing Output Buffer Overflow beim Einfügen des Escape-Bytes!");
+                return 0; // Indiziere Fehler
+            }
             output[outputIdx++] = ESCAPE_BYTE;
             output[outputIdx++] = input[i] ^ ESCAPE_XOR_MASK;
         } else {
             // Normale Bytes werden direkt kopiert.
+            if (outputIdx >= SEND_BUFFER_SIZE) { // Prüfe auf Pufferüberlauf
+                Serial.println("Fehler: Stuffing Output Buffer Overflow beim Kopieren eines Bytes!");
+                return 0; // Indiziere Fehler
+            }
             output[outputIdx++] = input[i];
-        }
-        // Prüfe auf Pufferüberlauf im Output-Puffer
-        if (outputIdx >= SEND_BUFFER_SIZE) {
-            Serial.println("Fehler: Stuffing Output Buffer Overflow!");
-            return 0; // Indiziere Fehler
         }
     }
     return outputIdx;
@@ -496,6 +545,10 @@ size_t RS485SecureStack::_unstuffBytes(const byte* input, size_t inputLen, byte*
             // Das nächste Byte ist das eigentliche Datenbyte, das un-XORt werden muss.
             escaped = true;
         } else {
+            if (outputIdx >= MAX_LOGICAL_PACKET_SIZE) { // Prüfe auf Pufferüberlauf vor dem Schreiben
+                Serial.println("Fehler: Unstuffing Output Buffer Overflow!");
+                return 0; // Indiziere Fehler
+            }
             if (escaped) {
                 // Wenn das vorherige Byte ein ESCAPE_BYTE war,
                 // un-XOR das aktuelle Byte, um den Originalwert zu erhalten.
@@ -506,11 +559,11 @@ size_t RS485SecureStack::_unstuffBytes(const byte* input, size_t inputLen, byte*
                 output[outputIdx++] = input[i];
             }
         }
-        // Prüfe auf Pufferüberlauf im Output-Puffer
-        if (outputIdx >= MAX_LOGICAL_PACKET_SIZE) {
-            Serial.println("Fehler: Unstuffing Output Buffer Overflow!");
-            return 0; // Indiziere Fehler
-        }
+    }
+    // Wenn am Ende noch ein "escaped" Zustand übrig ist, bedeutet das ein unvollständiges Escape-Sequenz
+    if (escaped) {
+        Serial.println("Fehler: Unvollständige Escape-Sequenz am Ende des Puffers beim Unstuffing.");
+        return 0;
     }
     return outputIdx;
 }
@@ -545,6 +598,15 @@ void RS485SecureStack::setSessionKey(uint16_t keyId, const byte sessionKey[AES_K
         Serial.print(keyId);
         Serial.println(" im Pool aktualisiert.");
     } else {
-        Serial.println("Warnung: Session Key Pool zu klein für diese ID oder ID ungültig.");
+        Serial.print("Warnung: Session Key Pool zu klein (MAX_SESSION_KEYS=");
+        Serial.print(MAX_SESSION_KEYS);
+        Serial.print(") für diese ID (");
+        Serial.print(keyId);
+        Serial.println(") oder ID ungültig.");
     }
+}
+
+// NEU: Setzt den KeyRotationManager
+void RS485SecureStack::setKeyRotationManager(KeyRotationManager* manager) {
+    _keyRotationManager = manager;
 }
