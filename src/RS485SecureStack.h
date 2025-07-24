@@ -8,6 +8,7 @@
 #include <SHA256.h> // SHA256 for HMAC (often integrated with Crypto for ESP32)
 #include <HMAC.h>   // HMAC implementation
 
+#if 0
 // --- Define RS485 Protocol Constants ---
 #define START_BYTE 0xAA      // Preamble start byte
 #define END_BYTE 0x55        // Preamble end byte
@@ -32,6 +33,55 @@
 //#define MAX_PAYLOAD_SIZE 128 // Max bytes for encrypted payload (plus padding)
 #define MAX_PAYLOAD_SIZE (MAX_PACKET_SIZE - HEADER_SIZE - HMAC_TAG_SIZE - AES_BLOCK_SIZE)
 #define MAX_PACKET_SIZE (MAX_PAYLOAD_SIZE * 2 + 32) // Max raw packet size (worst case byte stuffing + header/HMAC)
+#endif
+
+// --- Define RS485 Protocol Constants ---
+#define START_BYTE 0xAA      // Preamble start byte
+#define END_BYTE 0x55        // Preamble end byte
+#define ESCAPE_BYTE 0xBB     // Escape byte for byte stuffing
+#define ESCAPE_XOR_MASK 0x20 // XOR-Maske für Escape-Sequenzen
+
+// Message Types
+// Single characters to keep header small
+#define MSG_TYPE_DATA_TOKEN 'D' // Generic data message
+#define MSG_TYPE_ACK_TOKEN 'A'  // Acknowledgment
+#define MSG_TYPE_NACK_TOKEN 'N' // Negative Acknowledgment
+#define MSG_TYPE_MASTER_HEARTBEAT_TOKEN 'H' // Master's heartbeat message
+#define MSG_TYPE_BAUD_RATE_SET_TOKEN 'B'    // Master sets new baud rate
+#define MSG_TYPE_KEY_UPDATE_TOKEN 'K'       // Master pushes a new session key
+
+// --- Security Parameters ---
+#define AES_KEY_SIZE 16         // 128-bit AES key (Bytes)
+#define HMAC_KEY_SIZE 32        // 256-bit HMAC key (Master Key, Bytes)
+#define HMAC_TAG_SIZE 32        // SHA256 output size (Bytes)
+#define AES_BLOCK_SIZE 16       // AES block size (Bytes)
+#define IV_SIZE AES_BLOCK_SIZE  // IV size for AES-CBC (Bytes)
+
+// --- Protokoll- und Puffergrößen ---
+// Header-Größe: Source (1) + Target (1) + MsgType (1) + KeyID (2) + IV (16) = 21 Bytes
+#define HEADER_SIZE (1 + 1 + 1 + 2 + IV_SIZE) // 21 Bytes
+
+// Definierte maximale unverschlüsselte Nutzlast, die vom Nutzer gesendet werden kann
+#define MAX_RAW_PAYLOAD_SIZE 200 // Beispiel: 200 Bytes maximale Nutzlast (String etc.)
+
+// Maximale Größe der verschlüsselten Nutzlast nach Padding
+// (MAX_RAW_PAYLOAD_SIZE + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE * AES_BLOCK_SIZE
+// Stellt sicher, dass es ein Vielfaches der Blockgröße ist
+#define MAX_PADDED_ENCRYPTED_PAYLOAD_SIZE \
+    ((MAX_RAW_PAYLOAD_SIZE + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE * AES_BLOCK_SIZE)
+
+// Maximale Größe des *Logischen Pakets* (Header + verschlüsselte Payload + HMAC)
+// Dies ist die Größe VOR dem Byte-Stuffing
+#define MAX_LOGICAL_PACKET_SIZE (HEADER_SIZE + MAX_PADDED_ENCRYPTED_PAYLOAD_SIZE + HMAC_TAG_SIZE)
+
+// Maximale Größe des *Physikalischen Pakets* nach Byte-Stuffing im Worst-Case
+// Worst-Case ist, wenn jedes Byte gestufft werden muss (Verdopplung)
+// plus die 2 Rahmen-Bytes (START_BYTE, END_BYTE)
+#define MAX_PHYSICAL_PACKET_SIZE (MAX_LOGICAL_PACKET_SIZE * 2 + 2)
+
+// Maximale Größe des Puffers für eingehende/ausgehende gestuffte Daten
+#define RECEIVE_BUFFER_SIZE MAX_PHYSICAL_PACKET_SIZE
+#define SEND_BUFFER_SIZE MAX_PHYSICAL_PACKET_SIZE
 
 // --- Callback function types ---
 // The callback function will receive sender address, message type, and the DECRYPTED payload.
