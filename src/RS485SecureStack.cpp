@@ -20,6 +20,7 @@ RS485SecureStack::RS485SecureStack(HardwareSerial& serial, byte localAddress, co
       _currentPacketSource(0),
       _currentPacketTarget(0),
       _currentPacketMsgType(0)
+#if 0
 {
     memcpy(_masterKey, masterKey, HMAC_KEY_SIZE);
     
@@ -31,6 +32,39 @@ RS485SecureStack::RS485SecureStack(HardwareSerial& serial, byte localAddress, co
     };
     memcpy(_sessionKeyPool[0], initialSessionKey, AES_KEY_SIZE);
     memcpy(_currentSessionKey, initialSessionKey, AES_KEY_SIZE); // Set initial active key
+}
+#endif
+
+{
+    // Initialisiere den Master Key
+    memcpy(_masterKey, masterKey, HMAC_KEY_SIZE);
+
+    // Initialisiere Krypto-Objekte
+    _aes = new AESCrypto;
+    _hmac = new Hmac;
+    _sha256 = new SHA256; // Benötigt für die Ableitung des initialen Session Keys
+
+    // Initialisiere den Session Key Pool
+    for (int i = 0; i < MAX_SESSION_KEYS; ++i) {
+        memset(_sessionKeyPool[i], 0, AES_KEY_SIZE); // Alle Schlüssel zunächst mit Nullen initialisieren
+    }
+
+    // *** Wichtige Änderung hier: Ableiten des initialen Session Keys aus dem Master Key ***
+    // Nutze SHA256 als einfache KDF (Key Derivation Function)
+    byte derivedKey[HMAC_KEY_SIZE]; // SHA256 erzeugt 32 Bytes
+    _sha256->reset();
+    _sha256->update(_masterKey, HMAC_KEY_SIZE); // Hash über den Master Key
+    _sha256->finalize(derivedKey, HMAC_KEY_SIZE);
+
+    // Setze den ersten Session Key (Key ID 0) auf die ersten 16 Bytes des abgeleiteten Schlüssels
+    memcpy(_sessionKeyPool[0], derivedKey, AES_KEY_SIZE);
+    
+    // Setze den aktuellen Session Key auf den soeben abgeleiteten
+    // _aes->setKey(_sessionKeyPool[0], _aes->keySize()); // Dies geschieht in setCurrentKeyId(0) oder wenn ein Packet ankommt
+
+    // Registriere den initialen Schlüssel im Pool und setze ihn als aktiv
+    setSessionKey(0, _sessionKeyPool[0]); // Session Key 0 ist jetzt der abgeleitete Schlüssel
+    setCurrentKeyId(0); // Setze den abgeleiteten Schlüssel als aktuellen aktiven Schlüssel
 }
 
 void RS485SecureStack::begin(long baudRate) {
