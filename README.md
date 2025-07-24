@@ -258,3 +258,67 @@ Der RS485-Bus sollte als eine durchgehende Linie (Daisy-Chain) und nicht als Ste
 Dieses umfassende Setup ermöglicht eine realitätsnahe Validierung der robusten und sicheren Kommunikationsfähigkeiten des RS485SecureStack-Projekts.
 
 -----
+
+Ja, das ist eine ausgezeichnete Idee! Standard-GitHub-Sektionen wie Installation, Usage, Lizenz und Disclaimer sind essentiell für ein vollständiges und professionelles Repository. Sie erleichtern anderen die Nutzung, das Verständnis und die rechtliche Einordnung des Projekts.
+
+Ich werde diese Abschnitte in die `README.md` einbauen und dabei sicherstellen, dass sie die bereits besprochenen Punkte (PoC-Status, Shared-Key-Lösung, keine Produktionsfreigabe, deutsche Sprache) widerspiegeln und die MIT-Lizenz korrekt angeben.
+
+Hier sind die zusätzlichen Sektionen, die in die `README.md` integriert werden würden:
+
+---
+
+## 🚀 Erste Schritte
+
+### Installation
+
+1.  **Voraussetzungen:**
+    * **Arduino IDE:** Lade die Arduino IDE von der offiziellen Website herunter und installiere sie.
+    * **ESP32 Board-Definitionen:** Füge die ESP32 Board-Definitionen zur Arduino IDE hinzu. Gehe zu `Datei > Voreinstellungen`, füge `https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json` in "Zusätzliche Boardverwalter-URLs" ein. Gehe dann zu `Werkzeuge > Board > Boardverwalter...` und suche nach "esp32" und installiere die "esp32 by Espressif Systems" Boards.
+    * **Bibliotheken:**
+        * **`RS485SecureStack`:** Lade dieses Repository als ZIP herunter (`Code > Download ZIP`) und füge es über `Skizze > Bibliothek einbinden > .ZIP-Bibliothek hinzufügen...` in die Arduino IDE ein.
+        * **`Adafruit GFX Library`:** Installiere diese über den Arduino Bibliotheksverwalter (`Skizze > Bibliothek einbinden > Bibliotheken verwalten...`). Suche nach "Adafruit GFX" und installiere sie.
+        * **`Adafruit ST7789 Library`:** Installiere diese ebenfalls über den Arduino Bibliotheksverwalter. Suche nach "Adafruit ST7789" und installiere sie.
+        * **`ArduinoJson`:** Für komplexere Payload-Verarbeitung könnte diese nützlich sein, ist aber nicht direkt im Kern-Stack enthalten. Bei Bedarf installieren.
+2.  **Hardware-Anschluss:**
+    * Verbinde deine ESP32-Boards (ESP32-C3 und LilyGo T-Display S3) über die RS485 Transceiver (HW-159) wie im Abschnitt "Verdrahtungshinweise" beschrieben.
+    * Stelle sicher, dass die RS485-Leitung korrekt terminiert ist (120 Ohm Widerstände an den Enden des Busses, falls verwendet).
+3.  **Anpassung der Sketches:**
+    * Öffne die gewünschten Node-Sketches (z.B. `poc/scheduler_main_esp32.ino`, `poc/bus_monitor_esp32.ino`) in der Arduino IDE.
+    * **RS485-Pins:** Passe die GPIO-Pins für RX/TX und den DE/RE-Pin des RS485-Transceivers (falls verwendet) in den jeweiligen Sketches an deine Hardware an. Die Standard-UART0 wird oft für den Serial Monitor verwendet; für dedizierte RS485-Kommunikation ist es ratsam, eine andere HardwareSerial (z.B. `Serial1` oder `Serial2`) und entsprechende GPIOs zu verwenden.
+    * **`MASTER_KEY`:** Stelle sicher, dass der `MASTER_KEY` in allen Sketches, die am selben Bus kommunizieren sollen, **identisch** ist.
+    * **TFT-Pins (für Bus-Monitor):** Überprüfe und passe die TFT-Pins im `bus_monitor_esp32.ino` Sketch an die spezifische Pinbelegung deines LilyGo T-Display S3 an.
+
+### Usage
+
+1.  **Flashen der Firmware:**
+    * Wähle das korrekte Board und den COM-Port in der Arduino IDE aus (`Werkzeuge > Board`, `Werkzeuge > Port`).
+    * Lade die entsprechenden Sketches auf jedes deiner ESP32-Boards.
+        * Ein Board als **Scheduler**.
+        * Zwei Boards als **Submaster**.
+        * Zwei Boards als **Client**.
+        * Ein LilyGo T-Display S3 als **Bus-Monitor**.
+2.  **Inbetriebnahme:**
+    * Starte zuerst den **Scheduler (Master)**. Er wird beginnen, den Bus zu initialisieren und die Baudrate einzumessen.
+    * Schalte dann die **Submaster** und **Clients** ein. Sie sollten die Baudraten-Anweisungen des Masters empfangen und sich anpassen.
+    * Schalte den **Bus-Monitor** ein. Er sollte automatisch die Baudrate des Busses erkennen und beginnen, den Verkehr anzuzeigen.
+3.  **Interaktion mit dem Bus-Monitor:**
+    * Der Bus-Monitor (LilyGo T-Display S3) zeigt standardmäßig das Dashboard an.
+    * Über den seriellen Monitor des Bus-Monitors kannst du den Modus wechseln:
+        * `s`: Wechselt zum Simple Dashboard-Modus (TFT).
+        * `t`: Wechselt zum Traffic Analysis-Modus (TFT).
+        * `d`: Wechselt zum Debug Trace-Modus (nur serieller Monitor).
+    * Beobachte die Ausgaben auf dem TFT-Display und/oder im seriellen Monitor, um den Bus-Verkehr, Fehler und den Status der Nodes zu überwachen.
+
+### Lizenz
+
+Dieses Projekt ist unter der **MIT-Lizenz** lizenziert. Details finden Sie in der `LICENSE`-Datei im Root-Verzeichnis dieses Repositories.
+
+### Disclaimer
+
+**Wichtiger Hinweis:** Diese Version des RS485SecureStack ist **explizit für Proof-of-Concepts (PoCs)** und Evaluierungen in kontrollierten Umgebungen gedacht. Sie dient der Demonstration der Machbarkeit und der Sicherheitskonzepte.
+
+**Diese Software ist NICHT für den Produktionseinsatz geeignet.** Für den Einsatz in einer Produktionsumgebung ist das **sichere Provisioning und der Schutz des Master Authentication Key (MAK)** von entscheidender Bedeutung. Derzeit ist der MAK im Quellcode hinterlegt. Sobald entsprechende Verfahren dafür implementiert sind (z.B. durch Nutzung der ESP32-eigenen Secure-Boot- und Flash-Verschlüsselungsfunktionen oder dedizierte Hardware-Security-Module), kann das System für Feldtests und einen späteren Produktions-Rollout in Betracht gezogen werden.
+
+Die Autoren übernehmen keine Haftung für Schäden oder Verluste, die durch die Verwendung dieser Software entstehen. Die Nutzung erfolgt auf eigenes Risiko.
+
+---
