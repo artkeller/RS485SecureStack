@@ -13,9 +13,6 @@
 #define END_BYTE 0x55        // Preamble end byte
 #define ESCAPE_BYTE 0xBB     // Escape byte for byte stuffing
 
-#define MAX_PAYLOAD_SIZE 128 // Max bytes for encrypted payload (plus padding)
-#define MAX_PACKET_SIZE (MAX_PAYLOAD_SIZE * 2 + 32) // Max raw packet size (worst case byte stuffing + header/HMAC)
-
 // Message Types
 // Single characters to keep header small
 #define MSG_TYPE_DATA_TOKEN 'D' // Generic data message
@@ -31,6 +28,10 @@
 #define HMAC_TAG_SIZE 32 // SHA256 output size
 #define AES_BLOCK_SIZE 16 // AES block size
 #define IV_SIZE AES_BLOCK_SIZE // IV size for AES-CBC
+
+//#define MAX_PAYLOAD_SIZE 128 // Max bytes for encrypted payload (plus padding)
+#define MAX_PAYLOAD_SIZE (MAX_PACKET_SIZE - HEADER_SIZE - HMAC_TAG_SIZE - AES_BLOCK_SIZE)
+#define MAX_PACKET_SIZE (MAX_PAYLOAD_SIZE * 2 + 32) // Max raw packet size (worst case byte stuffing + header/HMAC)
 
 // --- Callback function types ---
 // The callback function will receive sender address, message type, and the DECRYPTED payload.
