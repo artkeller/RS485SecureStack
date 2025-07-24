@@ -3,131 +3,125 @@
 
 #include <Arduino.h>
 #include <HardwareSerial.h>
-#include <Crypto.h> // Common Crypto API for ESP32
-#include <AES.h>    // AES implementation (often integrated with Crypto for ESP32)
-#include <SHA256.h> // SHA256 for HMAC (often integrated with Crypto for ESP32)
-#include <HMAC.h>   // HMAC implementation
 
-#if 0
-// --- Define RS485 Protocol Constants ---
-#define START_BYTE 0xAA      // Preamble start byte
-#define END_BYTE 0x55        // Preamble end byte
-#define ESCAPE_BYTE 0xBB     // Escape byte for byte stuffing
-
-// Message Types
-// Single characters to keep header small
-#define MSG_TYPE_DATA_TOKEN 'D' // Generic data message
-#define MSG_TYPE_ACK_TOKEN 'A'  // Acknowledgment
-#define MSG_TYPE_NACK_TOKEN 'N' // Negative Acknowledgment
-#define MSG_TYPE_MASTER_HEARTBEAT_TOKEN 'H' // Master's heartbeat message
-#define MSG_TYPE_BAUD_RATE_SET_TOKEN 'B'    // Master sets new baud rate
-#define MSG_TYPE_KEY_UPDATE_TOKEN 'K'       // Master pushes a new session key
-
-// --- Security Parameters ---
-#define AES_KEY_SIZE 16 // 128-bit AES key
-#define HMAC_KEY_SIZE 32 // 256-bit HMAC key (Master Key)
-#define HMAC_TAG_SIZE 32 // SHA256 output size
-#define AES_BLOCK_SIZE 16 // AES block size
-#define IV_SIZE AES_BLOCK_SIZE // IV size for AES-CBC
-
-//#define MAX_PAYLOAD_SIZE 128 // Max bytes for encrypted payload (plus padding)
-#define MAX_PAYLOAD_SIZE (MAX_PACKET_SIZE - HEADER_SIZE - HMAC_TAG_SIZE - AES_BLOCK_SIZE)
-#define MAX_PACKET_SIZE (MAX_PAYLOAD_SIZE * 2 + 32) // Max raw packet size (worst case byte stuffing + header/HMAC)
-#endif
+// Include spezifische Crypto Bibliotheken für ESP32 Hardware-Beschleunigung
+#include <Crypto.h>
+#include <AES.h>    // Für AES128
+#include <SHA256.h> // Für SHA256 Hashes
+#include <HMAC.h>   // Für HMAC-SHA256
 
 // --- Define RS485 Protocol Constants ---
-#define START_BYTE 0xAA      // Preamble start byte
-#define END_BYTE 0x55        // Preamble end byte
-#define ESCAPE_BYTE 0xBB     // Escape byte for byte stuffing
-#define ESCAPE_XOR_MASK 0x20 // XOR-Maske für Escape-Sequenzen
+// Diese Konstanten definieren das physikalische Rahmenprotokoll
+#define START_BYTE 0xAA      // Startkennzeichen eines Pakets
+#define END_BYTE 0x55        // Endkennzeichen eines Pakets
+#define ESCAPE_BYTE 0xBB     // Escape-Zeichen für Byte-Stuffing
+#define ESCAPE_XOR_MASK 0x20 // XOR-Maske für escaped Bytes (z.B. 0xAA ^ 0x20)
 
 // Message Types
-// Single characters to keep header small
-#define MSG_TYPE_DATA_TOKEN 'D' // Generic data message
-#define MSG_TYPE_ACK_TOKEN 'A'  // Acknowledgment
-#define MSG_TYPE_NACK_TOKEN 'N' // Negative Acknowledgment
-#define MSG_TYPE_MASTER_HEARTBEAT_TOKEN 'H' // Master's heartbeat message
-#define MSG_TYPE_BAUD_RATE_SET_TOKEN 'B'    // Master sets new baud rate
-#define MSG_TYPE_KEY_UPDATE_TOKEN 'K'       // Master pushes a new session key
+// Ein-Byte-Charakter-Token für effizienten Header
+#define MSG_TYPE_DATA_TOKEN 'D' // Generische Daten-Nachricht
+#define MSG_TYPE_ACK_TOKEN 'A'  // Bestätigung (Acknowledgment)
+#define MSG_TYPE_NACK_TOKEN 'N' // Negative Bestätigung (Negative Acknowledgment)
+#define MSG_TYPE_MASTER_HEARTBEAT_TOKEN 'H' // Master's Heartbeat zur Anwesenheitserkennung
+#define MSG_TYPE_BAUD_RATE_SET_TOKEN 'B'    // Master setzt neue Baudrate
+#define MSG_TYPE_KEY_UPDATE_TOKEN 'K'       // Master verteilt neuen Session Key
 
-// --- Security Parameters ---
-#define AES_KEY_SIZE 16         // 128-bit AES key (Bytes)
-#define HMAC_KEY_SIZE 32        // 256-bit HMAC key (Master Key, Bytes)
-#define HMAC_TAG_SIZE 32        // SHA256 output size (Bytes)
-#define AES_BLOCK_SIZE 16       // AES block size (Bytes)
-#define IV_SIZE AES_BLOCK_SIZE  // IV size for AES-CBC (Bytes)
+// --- Security Parameters (feste Größen für AES-128 und HMAC-SHA256) ---
+#define AES_KEY_SIZE 16         // 128-bit AES Schlüssel (in Bytes)
+#define HMAC_KEY_SIZE 32        // 256-bit HMAC Schlüssel (Master Key, in Bytes)
+#define HMAC_TAG_SIZE 32        // SHA256 Output-Größe für HMAC (in Bytes)
+#define AES_BLOCK_SIZE 16       // AES Blockgröße (in Bytes)
+#define IV_SIZE AES_BLOCK_SIZE  // Initialisierungsvektor (IV) Größe für AES-CBC (in Bytes)
 
-// --- Protokoll- und Puffergrößen ---
+// --- Protokoll- und Puffergrößen Berechnung ---
 // Header-Größe: Source (1) + Target (1) + MsgType (1) + KeyID (2) + IV (16) = 21 Bytes
 #define HEADER_SIZE (1 + 1 + 1 + 2 + IV_SIZE) // 21 Bytes
 
-// Definierte maximale unverschlüsselte Nutzlast, die vom Nutzer gesendet werden kann
-#define MAX_RAW_PAYLOAD_SIZE 200 // Beispiel: 200 Bytes maximale Nutzlast (String etc.)
+// Definierte maximale unverschlüsselte Nutzlast (String etc.) die vom Nutzer gesendet werden kann.
+// Dies ist die *maximale Länge des Strings/Byte-Arrays*, das du verschlüsseln möchtest.
+#define MAX_RAW_PAYLOAD_SIZE 200 // Beispiel: 200 Bytes maximale Nutzlast
 
-// Maximale Größe der verschlüsselten Nutzlast nach Padding
-// (MAX_RAW_PAYLOAD_SIZE + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE * AES_BLOCK_SIZE
-// Stellt sicher, dass es ein Vielfaches der Blockgröße ist
+// Maximale Größe der verschlüsselten Nutzlast nach PKCS7-Padding.
+// Muss ein Vielfaches der AES_BLOCK_SIZE sein.
+// Formel: ((RAW_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE) * BLOCK_SIZE
 #define MAX_PADDED_ENCRYPTED_PAYLOAD_SIZE \
     ((MAX_RAW_PAYLOAD_SIZE + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE * AES_BLOCK_SIZE)
 
-// Maximale Größe des *Logischen Pakets* (Header + verschlüsselte Payload + HMAC)
-// Dies ist die Größe VOR dem Byte-Stuffing
+// Maximale Größe des *Logischen Pakets* (vor Byte-Stuffing)
+// = Header + MAX_PADDED_ENCRYPTED_PAYLOAD_SIZE + HMAC_TAG_SIZE
 #define MAX_LOGICAL_PACKET_SIZE (HEADER_SIZE + MAX_PADDED_ENCRYPTED_PAYLOAD_SIZE + HMAC_TAG_SIZE)
 
-// Maximale Größe des *Physikalischen Pakets* nach Byte-Stuffing im Worst-Case
-// Worst-Case ist, wenn jedes Byte gestufft werden muss (Verdopplung)
-// plus die 2 Rahmen-Bytes (START_BYTE, END_BYTE)
-#define MAX_PHYSICAL_PACKET_SIZE (MAX_LOGICAL_PACKET_SIZE * 2 + 2)
+// Maximale Größe des *Physikalischen Pakets* nach Byte-Stuffing im Worst-Case.
+// Im Worst-Case kann jedes Byte im logischen Paket escaped werden (Verdopplung).
+// Plus die 2 zusätzlichen Rahmen-Bytes (START_BYTE, END_BYTE).
+#define MAX_PHYSICAL_PACKET_SIZE (MAX_LOGICAL_PACKET_SIZE * 2 + 2) // * 2 für Stuffing, + 2 für Start/End Bytes
 
-// Maximale Größe des Puffers für eingehende/ausgehende gestuffte Daten
+// Maximale Größe der Puffer für eingehende/ausgehende gestuffte Daten
 #define RECEIVE_BUFFER_SIZE MAX_PHYSICAL_PACKET_SIZE
 #define SEND_BUFFER_SIZE MAX_PHYSICAL_PACKET_SIZE
 
+// Maximale Anzahl von Session Keys, die im Pool gespeichert werden können.
+// Ermöglicht Rekeying und das Speichern mehrerer Schlüssel.
+#define MAX_SESSION_KEYS 5 
+
 // --- Callback function types ---
-// The callback function will receive sender address, message type, and the DECRYPTED payload.
+// Typdefinition für die Callback-Funktion, die aufgerufen wird, wenn ein
+// gültiges, entschlüsseltes Paket empfangen wurde.
 typedef void (*ReceiveCallback)(byte senderAddr, char msgType, const String& payload);
 
 class RS485SecureStack {
 public:
-    // Constructor: Takes HardwareSerial reference, local address, and master key
+    // Konstruktor: Nimmt eine Referenz auf die HardwareSerial, die lokale Adresse
+    // und den Master Authentication Key entgegen.
+    // Der masterKey ist ein Array der Größe HMAC_KEY_SIZE (32 Bytes).
     RS485SecureStack(HardwareSerial& serial, byte localAddress, const byte masterKey[HMAC_KEY_SIZE]);
 
-    // Initializes the RS485 hardware serial and internal buffers
+    // Initialisiert die RS485 Hardware Serial und interne Puffer.
     void begin(long baudRate);
 
-    // Processes incoming bytes from the RS485 bus. Call frequently in loop().
+    // Setzt den GPIO-Pin für die DE/RE-Steuerung des RS485-Transceivers.
+    // Dieser Pin muss im Anwendungs-Sketch konfiguriert und verwaltet werden.
+    void setDeRePin(int pin);
+
+    // Verarbeitet eingehende Bytes vom RS485 Bus. Muss häufig in loop() aufgerufen werden.
     void processIncoming();
 
-    // Sends a message to a specific target address
-    // Returns true on success, false otherwise (e.g., buffer full)
+    // Sendet eine verschlüsselte und authentifizierte Nachricht an eine Zieladresse.
+    // targetAddress: Zielknoten-Adresse (0xFF für Broadcast).
+    // msgType: Typ der Nachricht (z.B. MSG_TYPE_DATA).
+    // payload: Die zu sendende Nutzlast als String.
+    // Gibt true bei Erfolg zurück, false bei Fehler (z.B. Puffer voll).
     bool sendMessage(byte targetAddress, char msgType, const String& payload);
 
-    // Registers a callback function to be called when a valid, decrypted message is received
+    // Registriert eine Callback-Funktion, die aufgerufen wird,
+    // wenn eine gültige, entschlüsselte Nachricht empfangen wurde.
     void registerReceiveCallback(ReceiveCallback callback);
 
-    // Sends an ACK or NACK in response to a received message
+    // Sendet ein ACK (Acknowledgment) oder NACK (Negative Acknowledgment)
+    // als Antwort auf eine empfangene Nachricht.
+    // targetAddress: An den ursprünglichen Absender.
+    // originalMsgType: Der Typ der Nachricht, auf die geantwortet wird (für Kontext).
+    // success: true für ACK, false für NACK.
     bool sendAckNack(byte targetAddress, char originalMsgType, bool success);
+    
+    // Ermöglicht das dynamische Ändern der Baudrate der RS485-Schnittstelle.
+    void _setBaudRate(long newBaudRate); 
 
-    // --- Internal/Utility functions exposed for debugging/monitoring ---
-    void _setBaudRate(long newBaudRate); // Allows changing baud rate dynamically
-    uint16_t _currentSessionKeyId; // Publicly accessible to monitor current key ID
-    byte _currentPacketSource; // Source address of the last processed packet
-    byte _currentPacketTarget; // Target address of the last processed packet
-    char _currentPacketMsgType; // Message type of the last processed packet
-    byte _currentPacketIV[IV_SIZE]; // IV of the last processed packet (for debugging)
-    
-    // For monitor, to check HMAC/Checksum status
-    bool _hmacVerified;
-    bool _checksumVerified;
-    
-    // Enable/Disable ACK/NACK sending for this node
+    // Ermöglicht die Steuerung, ob dieser Knoten ACKs/NACKs sendet.
     void setAckEnabled(bool enabled);
 
-    // Set the current session key ID and key (Master only or after Key_Update)
+    // Setzt den aktuell zu verwendenden Session Key aus dem internen Pool.
+    // keyId: Die ID des zu aktivierenden Schlüssels.
     void setCurrentKeyId(uint16_t keyId);
+
+    // Speichert einen neuen Session Key im internen Pool unter der gegebenen ID.
+    // Dies wird hauptsächlich vom Master verwendet, um neue Schlüssel zu verteilen,
+    // oder von Clients, um neue Schlüssel vom Master zu empfangen und zu speichern.
     void setSessionKey(uint16_t keyId, const byte sessionKey[AES_KEY_SIZE]);
 
-     // Klassenmember für Nachrichtentypen
+    // --- Klassenmember für Nachrichtentypen (saubere C++-Konstanten) ---
+    // Diese sind public zugänglich (z.B. RS485SecureStack::MSG_TYPE_DATA)
+    // und leiten ihre Werte von den oben definierten #define TOKENs ab.
     static const char MSG_TYPE_DATA = MSG_TYPE_DATA_TOKEN;
     static const char MSG_TYPE_ACK = MSG_TYPE_ACK_TOKEN;
     static const char MSG_TYPE_NACK = MSG_TYPE_NACK_TOKEN;
@@ -135,54 +129,69 @@ public:
     static const char MSG_TYPE_BAUD_RATE_SET = MSG_TYPE_BAUD_RATE_SET_TOKEN;
     static const char MSG_TYPE_KEY_UPDATE = MSG_TYPE_KEY_UPDATE_TOKEN;
 
+    // --- Public zugängliche Statusvariablen (für Debugging/Monitoring) ---
+    uint16_t _currentSessionKeyId; // Aktuell verwendete Session Key ID
+    byte _currentPacketSource;     // Quelladresse des zuletzt verarbeiteten Pakets
+    byte _currentPacketTarget;     // Zieladresse des zuletzt verarbeiteten Pakets
+    char _currentPacketMsgType;    // Nachrichtentyp des zuletzt verarbeiteten Pakets
+    byte _currentPacketIV[IV_SIZE]; // IV des zuletzt verarbeiteten Pakets (für Debugging)
+    bool _hmacVerified;            // Flag: War der HMAC des letzten Pakets gültig?
+    bool _checksumVerified;        // Flag: War eine eventuelle Checksumme gültig? (derzeit immer true)
+
 private:
-    HardwareSerial& _rs485Serial;
-    byte _localAddress;
-    byte _masterKey[HMAC_KEY_SIZE]; // The pre-shared master key (for HMAC)
+    HardwareSerial& _rs485Serial; // Referenz auf die Hardware-Serial Instanz (z.B. Serial1)
+    byte _localAddress;           // Die eindeutige Adresse dieses Knotens auf dem Bus
+    byte _masterKey[HMAC_KEY_SIZE]; // Der Pre-Shared Master Authentication Key (MAK) für HMAC
 
-    AES _aes;
-    SHA256 _sha256;
-    HMAC _hmac;
+    // Krypto-Objekte als direkte Member, Nutzung der ESP32 Hardware-Beschleunigung
+    AES128 _aes;     // AES128 Objekt für Ver- und Entschlüsselung
+    SHA256 _sha256;  // SHA256 Objekt, primär für Key Derivation und intern von HMAC genutzt
+    HMAC<SHA256> _hmac; // HMAC Objekt für Message Authentication Code Berechnung/Verifikation
 
-    // Current session key for AES encryption/decryption
-    byte _currentSessionKey[AES_KEY_SIZE];
+    // Session Key Management
+    // Pool für Session Keys. Key-ID 0 wird für den initialen, vom MAK abgeleiteten Schlüssel genutzt.
+    byte _sessionKeyPool[MAX_SESSION_KEYS][AES_KEY_SIZE]; 
+    byte _currentSessionKey[AES_KEY_SIZE]; // Der aktuell aktive AES-Schlüssel
+
+    ReceiveCallback _receiveCallback; // Zeiger auf die registrierte Callback-Funktion
+
+    // RS485 Transceiver Control Pin
+    int _deRePin; // GPIO Pin für DE/RE (Data Enable / Receive Enable)
+
+    // Empfangs-Puffer und Zustandsmaschinen-Variablen für die Paketverarbeitung
+    byte _receiveBuffer[RECEIVE_BUFFER_SIZE]; // Puffer für eingehende, gestuffte Bytes
+    size_t _receiveBufferIdx;                 // Aktueller Index im Empfangspuffer
+    bool _receivingPacket;                    // Flag: Befindet sich der Parser in einem Paket?
+    bool _escapeNextByte;                     // Flag: Ist das nächste Byte ein escaped Byte?
     
-    ReceiveCallback _receiveCallback;
-
-    // Receive buffer and state machine variables
-    byte _receiveBuffer[MAX_PACKET_SIZE];
-    size_t _receiveBufferIdx;
-    bool _receivingPacket;
-    bool _escapeNextByte;
-    
-    // Packet parsing state variables
-    byte _currentPacketRaw[MAX_PACKET_SIZE]; // Raw received packet
+    // Puffer für das ungestuffte, rohe logische Paket (für Debugging und HMAC-Berechnung)
+    byte _currentPacketRaw[MAX_LOGICAL_PACKET_SIZE]; 
     size_t _currentPacketRawLen;
 
-    // --- Internal helper functions ---
-    void sendRaw(const byte* data, size_t len);
-    
-    // Encapsulates data into a secure packet
-    // Returns true if packet was sent, false otherwise
-    bool buildAndSendPacket(byte targetAddress, char msgType, const byte* payload, size_t payloadLen, uint16_t keyId, const byte iv[IV_SIZE]);
-    
-    // Packet parsing and validation
-    void processReceivedPacket(const byte* packet, size_t len);
-    
-    // Encryption/Decryption
-    size_t encryptPayload(const byte* plain, size_t plainLen, byte* encrypted, const byte key[AES_KEY_SIZE], byte iv[IV_SIZE]);
-    size_t decryptPayload(const byte* encrypted, size_t encryptedLen, byte* decrypted, const byte key[AES_KEY_SIZE], const byte iv[IV_SIZE]);
+    // --- Interne Helferfunktionen (private Methoden) ---
 
-    // Byte stuffing/unstuffing
-    size_t stuffBytes(const byte* input, size_t inputLen, byte* output);
-    size_t unstuffBytes(const byte* input, size_t inputLen, byte* output);
-
-    bool _ackEnabled; // Flag to control if this node sends ACKs/NACKs
+    // Sendet Rohdaten über die RS485-Schnittstelle (kümmert sich um DE/RE Pin, falls gesetzt)
+    void _sendRaw(const byte* data, size_t len);
     
-    // Internal session key storage (for master to manage, for clients to react)
-    // For a real system, these would be managed more robustly and securely.
-    // Here, just a simple example for dynamic rekeying
-    byte _sessionKeyPool[2][AES_KEY_SIZE]; // Store current and next key, for example
+    // Baut ein sicheres Paket zusammen (Header, verschlüsselte Payload, HMAC)
+    // und sendet es über den Bus (inkl. Byte-Stuffing und Rahmen).
+    bool _buildAndSendPacket(byte targetAddress, char msgType, const byte* payload, size_t payloadLen, uint16_t keyId, const byte iv[IV_SIZE]);
+    
+    // Verarbeitet ein vollständig empfangenes, ungestufftes Logisches Paket.
+    // Führt HMAC-Verifikation, Entschlüsselung und Callback-Aufruf durch.
+    void _processReceivedPacket(const byte* packet, size_t len);
+    
+    // Verschlüsselt die Klartext-Nutzlast mit AES-128-CBC und PKCS7-Padding.
+    size_t _encryptPayload(const byte* plain, size_t plainLen, byte* encrypted, const byte key[AES_KEY_SIZE], byte iv[IV_SIZE]);
+    // Entschlüsselt die verschlüsselte Nutzlast und entfernt PKCS7-Padding.
+    size_t _decryptPayload(const byte* encrypted, size_t encryptedLen, byte* decrypted, const byte key[AES_KEY_SIZE], const byte iv[IV_SIZE]);
+
+    // Implementierung des Byte-Stuffings (DLE-basiert mit XOR-Maske).
+    size_t _stuffBytes(const byte* input, size_t inputLen, byte* output);
+    // Implementierung des Byte-Unstuffings (DLE-basiert mit XOR-Maske).
+    size_t _unstuffBytes(const byte* input, size_t inputLen, byte* output);
+
+    bool _ackEnabled; // Flag, ob dieser Knoten ACKs/NACKs sendet
 };
 
 #endif // RS485_SECURE_STACK_H
