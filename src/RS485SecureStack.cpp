@@ -33,6 +33,17 @@ RS485SecureStack::RS485SecureStack(HardwareSerial& serial, byte localAddress, co
       _currentPacketTarget(0),
       _currentPacketMsgType(0)
 #if 0
+RS485SecureStack::RS485SecureStack(HardwareSerial& serial, byte localAddr, const byte* masterKey)
+    : _serial(serial), 
+      _localAddr(localAddr), 
+      _receiveState(WAITING_FOR_START_BYTE),
+      _receivedPacketLen(0), 
+      _hmacVerified(false), 
+      _ackEnabled(false), 
+      _deRePin(-1), 
+      _currentSessionKeyId(0)
+#endif
+#if 0
 {
     memcpy(_masterKey, masterKey, HMAC_KEY_SIZE);
     
