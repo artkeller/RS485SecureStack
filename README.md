@@ -80,7 +80,7 @@ Das Projekt besteht aus einer Kernbibliothek (`RS485SecureStack`) und verschiede
 
 ### RS485SecureStack Bibliothek
 
-Dies ist die C++-Bibliothek, die die grundlegenden Funktionen für die gesicherte RS485-Kommunikation bereitstellt:
+Dies ist die C++-Bibliothek im `src/` Ordner, die die grundlegenden Funktionen für die gesicherte RS485-Kommunikation bereitstellt:
 
   * Initialisierung der Hardware-Serial für RS485.
   * Implementierung des Sende- und Empfangsmechanismus mit Preamble, Header, Payload und Trailer.
@@ -91,7 +91,7 @@ Dies ist die C++-Bibliothek, die die grundlegenden Funktionen für die gesichert
 
 ### Node-Typen (Arduino Sketches)
 
-Im `src/` Ordner findest du die Implementierungen der verschiedenen Nodes:
+Im `poc/` Ordner findest du die Implementierungen der verschiedenen Nodes:
 
 #### 1\. Scheduler (Master)
 
