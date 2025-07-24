@@ -1,5 +1,17 @@
+#if 0
 #include "RS485SecureStack.h"
 #include "Crypto.h" // Ensure Crypto.h is included for AES/HMAC context
+#endif
+
+#include "RS485SecureStack.h"
+#include <HardwareSerial.h>
+#include <Crypto.h> // Für SHA256
+#include <AES.h>
+#include <HMAC.h>
+#include <SHA256.h> // Explizit für die Key-Ableitung
+
+// Define MAX_PAYLOAD_SIZE if not already defined (e.g., in .h)
+// #define MAX_PAYLOAD_SIZE (MAX_PACKET_SIZE - HEADER_SIZE - HMAC_TAG_SIZE - AES_BLOCK_SIZE)
 
 // Initialize the ESP32 hardware crypto engines
 AES128 aes128; // Using AES128 for 128-bit key
