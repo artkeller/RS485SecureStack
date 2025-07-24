@@ -259,14 +259,6 @@ Dieses umfassende Setup ermöglicht eine realitätsnahe Validierung der robusten
 
 -----
 
-Ja, das ist eine ausgezeichnete Idee! Standard-GitHub-Sektionen wie Installation, Usage, Lizenz und Disclaimer sind essentiell für ein vollständiges und professionelles Repository. Sie erleichtern anderen die Nutzung, das Verständnis und die rechtliche Einordnung des Projekts.
-
-Ich werde diese Abschnitte in die `README.md` einbauen und dabei sicherstellen, dass sie die bereits besprochenen Punkte (PoC-Status, Shared-Key-Lösung, keine Produktionsfreigabe, deutsche Sprache) widerspiegeln und die MIT-Lizenz korrekt angeben.
-
-Hier sind die zusätzlichen Sektionen, die in die `README.md` integriert werden würden:
-
----
-
 ## 🚀 Erste Schritte
 
 ### Installation
