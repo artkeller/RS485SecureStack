@@ -90,6 +90,8 @@ Um die Funktionalität, Sicherheit und Robustheit des RS485SecureStack zu demons
 
 ### Systemübersicht (Graphic)
 
+```doc
+
 +----------------+                   +----------------+
 |    Scheduler   | Master (Address 0)|                |
 |  ESP32-C3 Dev. |<----------------->|   RS485 Bus    |
@@ -118,6 +120,7 @@ V
 | LilyGo T-Disp. S3|
 |  (TFT + UART0) |
 +----------------+
+```
 
 
 *(Hinweis: Die Pfeile auf dem RS485 Bus symbolisieren bidirektionale Kommunikation. Jeder Node ist über einen RS485 Transceiver mit dem Bus verbunden.)*
