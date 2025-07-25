@@ -214,7 +214,7 @@ Je nach Variante Ihres RS485-Transceiver-Moduls (z.B. HW-159 oder ähnliche MAX4
     * **Verdrahtung:** Der DE/RE-Pin des RS485-Moduls wird mit einem beliebigen freien GPIO-Pin des ESP32 verbunden (z.B. GPIO 3).
 
 2.  **Automatische Flussrichtungssteuerung (bei Modulen mit integrierter Logik):**
-    * Einige RS485-Module (wie von Ihnen beschrieben für Ihr spezifisches HW-159 Modul oder ähnlich dem HW-519) verfügen über **zusätzliche Hardware-Logik auf der Platine**, die die DE/RE-Pins des MAX485-Chips intern steuert.
+    * Einige RS485-Module (wie das im vorliegenden PoC verwendete HW-159-Modul) verfügen über **zusätzliche Hardware-Logik auf der Platine**, die die DE/RE-Pins des MAX485-Chips intern steuert.
     * Diese Module erkennen selbstständig anhand der Aktivität auf der TX-Leitung des Mikrocontrollers, wann gesendet werden soll.
     * **Verdrahtung:** Für diese Module ist KEIN separater GPIO-Pin vom Mikrocontroller für die DE/RE-Steuerung erforderlich. Das Modul wird dann typischerweise nur über GND, VCC, RX (vom Modul zum MCU) und TX (vom MCU zum Modul) mit dem Mikrocontroller verbunden, zusätzlich zu den RS485-Bus-Leitungen A und B.
 
