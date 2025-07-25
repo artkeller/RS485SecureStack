@@ -154,7 +154,7 @@ Der RS485-Bus sollte als eine durchgehende Linie (Daisy-Chain) und nicht als Ste
 
 ### Betriebsszenarien der RS485SecureCom Applikation
 
-Die `RS486SecureCom` Applikation demonstriert die Interaktion der verschiedenen Nodes in realen Betriebsszenarien, die auch die Sicherheits- und Safety-Funktionen des `RS485SecureStack` umfassen:
+Die `RS485SecureCom` Applikation demonstriert die Interaktion der verschiedenen Nodes in realen Betriebsszenarien, die auch die Sicherheits- und Safety-Funktionen des `RS485SecureStack` umfassen:
 
 1.  **Systemstart & Baudraten-Einmessung (Sketches: Scheduler, alle Clients/Submaster, Bus-Monitor)**
     * Alle Nodes starten auf einer Standard-Baudrate (z.B. 9600 bps).
