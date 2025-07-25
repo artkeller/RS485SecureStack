@@ -296,15 +296,6 @@ Diese Szenarien verdeutlichen die umfassenden Fähigkeiten der `RS485SecureCom`-
 
 Diese Beispiele sind **ausschließlich für Proof-of-Concepts (PoCs)**, Evaluierungen und Entwicklungszwecke in kontrollierten Umgebungen gedacht. Sie dienen der Demonstration der Machbarkeit und der Sicherheitskonzepte des `RS485SecureStack`.
 
-**Diese Software ist NICHT für den Produktionseinsatz geeignet.** Für den Einsatz in einer Produktionsumgebung ist das **sichere Provisioning und der Schutz des Master Authentication Key (MAK)** von entscheidender Bedeutung. Derzeit ist der MAK im Quellcode hinterlegt. Implementierungen für Secure-Boot, Flash-Verschlüsselung und Hardware-Security-Module, die für einen produktiven Einsatz notwendig wären, sind in diesen Beispielen nicht enthalten.
-
-Die Autoren übernehmen keine Haftung für Schäden oder Verluste, die durch die Verwendung dieser Software entstehen. Die Nutzung erfolgt auf eigenes Risiko.
-
-
-## ⚠️ Disclaimer für Anwendungsbeispiele
-
-Diese Beispiele sind **ausschließlich für Proof-of-Concepts (PoCs)**, Evaluierungen und Entwicklungszwecke in kontrollierten Umgebungen gedacht. Sie dienen der Demonstration der Machbarkeit und der Sicherheitskonzepte des `RS485SecureStack`.
-
 **Diese Software hat den Reifegrad Alpha und ist (NOCH) NICHT für den Produktionseinsatz geeignet.** Für den Einsatz in einer Produktionsumgebung ist das **sichere Provisioning und der Schutz des Master Authentication Key (MAK)** von entscheidender Bedeutung. Derzeit ist der MAK im Quellcode hinterlegt. Implementierungen für Secure-Boot, Flash-Verschlüsselung und Hardware-Security-Module, die für einen produktiven Einsatz notwendig wären, sind in diesen Beispielen nicht enthalten.
 
 Die Autoren übernehmen keine Haftung für Schäden oder Verluste, die durch die Verwendung dieser Software entstehen. Die Nutzung erfolgt auf eigenes Risiko.
