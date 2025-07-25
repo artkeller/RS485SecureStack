@@ -42,6 +42,78 @@ Wichtige Informationen zu den implementierten Sicherheitsmechanismen, dem Bedroh
 
 -----
 
+## 📄 RS485SecureStack: Protokoll-Spezifikation (Datagramm-Format)
+
+Der `RS485SecureStack` definiert ein spezifisches Datagramm-Format, das die sichere und zuverlässige Übertragung von Daten über den RS485-Bus ermöglicht. Jedes gesendete Paket folgt einer festen Struktur, die spezielle Kontrollbytes, einen Header, einen Initialisierungsvektor (IV), den verschlüsselten Nutzdaten-Payload und einen Message Authentication Code (HMAC) umfasst. Ein **Byte-Stuffing-Mechanismus** wird angewendet, um die Integrität des Framings zu gewährleisten.
+
+### Paket-Struktur (Wire-Format)
+
+Ein vollständiges RS485SecureStack-Datagramm, wie es über den Bus gesendet wird, hat die folgende Struktur:
+
+```doc
+	+-----------+-----------+-----------+------//-----------+-----------------+--------------+-----------+
+	| START_BYTE|   HEADER  |    IV     | Encrypted Payload |     HMAC        | CHECKSUM     | END_BYTE  |
+	| (1 Byte)  | (6 Bytes) | (16 Bytes)|  (Variable)       |  (32 Bytes)     | (1 Byte)     | (1 Byte)  |
+	+-----------+-----------+-----------+------//-----------+-----------------+--------------+-----------+
+```
+
+Alle Felder (außer `START_BYTE` und `END_BYTE`) durchlaufen den **Byte-Stuffing-Prozess** vor dem Senden und den **Unstuffing-Prozess** nach dem Empfang. Dies verhindert, dass die Kontrollbytes (`START_BYTE`, `END_BYTE`, `ESCAPE_BYTE`) fälschlicherweise im Datenstrom als Rahmenbegrenzer interpretiert werden.
+
+#### Detaillierte Felderbeschreibung:
+
+1.  **`START_BYTE` (0xAA):**
+    * Ein festes Byte, das den Beginn eines jeden Pakets markiert.
+    * Wird nicht gestufft.
+
+2.  **`HEADER` (6 Bytes):**
+    * Definiert wichtige Metadaten des Pakets.
+    * Struktur:
+        * **`SourceAddress` (1 Byte):** Die eindeutige Adresse des sendenden Knotens (0-255).
+        * **`DestinationAddress` (1 Byte):** Die eindeutige Adresse des Zielknotens (0-255). 0 ist typischerweise der Master/Scheduler. 255 ist eine Broadcast-Adresse.
+        * **`MessageType` (1 Byte):** Ein einzelnes Zeichen (`char`), das den Typ der Nachricht angibt (z.B. 'H' für Heartbeat, 'B' für Baudrate-Set, 'D' für Daten, 'K' für Key-Update, 'A' für ACK/NACK).
+        * **`PayloadLength` (2 Bytes, `uint16_t`):** Die tatsächliche Länge des *verschlüsselten* Payloads in Bytes.
+        * **`Flags` (1 Byte):** Reserviert für zukünftige Erweiterungen oder spezielle Kennzeichnungen (z.B. Request/Response, Fragmentierung).
+
+3.  **`IV` (Initialization Vector, 16 Bytes):**
+    * Ein **einzigartiger, zufälliger** 16-Byte-Vektor, der für die AES-128 CBC-Verschlüsselung benötigt wird.
+    * Wird für jedes Paket neu mittels des Hardware True Random Number Generators (TRNG) des ESP32 generiert.
+    * Wird unverschlüsselt übertragen, da er zur Entschlüsselung benötigt wird und keine Vertraulichkeit erfordert. Seine Einzigartigkeit ist entscheidend für die Sicherheit.
+
+4.  **`Encrypted Payload` (Variable Länge, bis zu `MAX_PAYLOAD_SIZE`):**
+    * Die tatsächlichen Nutzdaten der Nachricht, die mit AES-128 CBC unter Verwendung des aktuellen Sitzungsschlüssels und des IV verschlüsselt wurden.
+    * Die maximale Größe wird durch `MAX_PAYLOAD_SIZE` in der Bibliothek definiert.
+
+5.  **`HMAC` (Hash-based Message Authentication Code, 32 Bytes):**
+    * Ein SHA256-basierter HMAC, der über den gesamten **Header, den IV und den *verschlüsselten* Payload** berechnet wird.
+    * Dient der **Authentifizierung** des Absenders und der **Integritätsprüfung** der Nachricht.
+    * Wird mit dem `MASTER_KEY` generiert und verifiziert. Bei einer Diskrepanz wird das Paket verworfen.
+
+6.  **`CHECKSUM` (1 Byte, XOR-basiert):**
+    * Eine einfache XOR-Prüfsumme über alle Bytes *nach* dem `START_BYTE` und *vor* dem `END_BYTE` (d.h. über Header, IV, Encrypted Payload, HMAC).
+    * Dient als schnelle erste Integritätsprüfung auf der Byte-Ebene, bevor die aufwendigere HMAC-Prüfung erfolgt. Ein Checksum-Fehler führt zum sofortigen Verwerfen des Pakets.
+
+7.  **`END_BYTE` (0x55):**
+    * Ein festes Byte, das das Ende eines jeden Pakets markiert.
+    * Wird nicht gestufft.
+
+### Byte-Stuffing-Mechanismus:
+
+Um zu verhindern, dass die speziellen Kontrollbytes (`START_BYTE` 0xAA, `END_BYTE` 0x55, `ESCAPE_BYTE` 0xBB) innerhalb der Nutzdaten (Header, IV, Encrypted Payload, HMAC) auftreten und fälschlicherweise als Rahmenbegrenzer interpretiert werden, wird ein Stuffing-Mechanismus angewendet:
+
+* **`ESCAPE_BYTE` (0xBB):** Ein spezielles Byte, das zur Kennzeichnung von "gestufften" Bytes verwendet wird.
+* **Prozedur beim Senden:**
+    * Wenn ein Byte im Datenstrom (Header, IV, Encrypted Payload, HMAC, Checksum) dem Wert von `START_BYTE` (0xAA), `END_BYTE` (0x55) oder `ESCAPE_BYTE` (0xBB) entspricht:
+        * Es wird durch das `ESCAPE_BYTE` (0xBB) ersetzt, gefolgt von einer modifizierten Version des Originalbytes (OriginalByte XOR 0x20).
+        * Beispiel: `0xAA` wird zu `0xBB 0x8A` (0xAA XOR 0x20 = 0x8A).
+        * `0x55` wird zu `0xBB 0x75` (0x55 XOR 0x20 = 0x75).
+        * `0xBB` wird zu `0xBB 0x9B` (0xBB XOR 0x20 = 0x9B).
+* **Prozedur beim Empfangen (Unstuffing):**
+    * Wenn ein `ESCAPE_BYTE` (0xBB) empfangen wird, wird das *nächste* Byte gelesen und mit `0x20` XOR-verknüpft, um das Originalbyte wiederherzustellen. Das `ESCAPE_BYTE` selbst wird verworfen.
+
+Dieser Mechanismus stellt sicher, dass der Paketrahmen (Start- und End-Byte) immer eindeutig ist und die korrekte Dekodierung der Nutzdaten ermöglicht. Die maximale Paketlänge erhöht sich durch das Stuffing geringfügig, im schlimmsten Fall um das Doppelte, wenn jedes Byte ein Kontrollbyte wäre. Dies ist jedoch in der Praxis unwahrscheinlich und wird durch die maximale Payload-Größe berücksichtigt.
+
+-----
+
 ## 🚀 Unterstützte MCUs
 
 Die Wahl des richtigen Mikrocontrollers ist entscheidend für die Leistungsfähigkeit und die Sicherheitsmerkmale des Stacks, da dieser dedizierte Hardware-Kryptographie-Beschleuniger nutzt.
@@ -84,14 +156,13 @@ Für den Betrieb des `RS485SecureStack` benötigen Sie:
     * Beispiel: `HardwareSerial& rs485Serial = Serial1;`
 * **Für den Bus-Monitor:** Zusätzlich ein TFT-Display, z.B. das ST7789, wie es auf dem LilyGo T-Display S3 zu finden ist.
 
-## 🧪 Anwendungsbeispiel: RS485SecureCom Applikation
+## 🧪 Anwendungsbeispiel: RS486SecureCom Applikation
 
-Im `examples/` Verzeichnis dieses Projekts finden Sie die Applikation `RS485SecureCom`. Diese demonstriert die Nutzung der `RS485SecureStack`-Bibliothek in einer realen Welt, verteilten Umgebung. Die Applikation besteht aus vier verschiedenen Sketchen, die auf verschiedenen Node-Typen (Scheduler, Submaster, Clients und Bus-Monitor) ausgeführt werden und gemeinsam ein sicheres und intelligent verwaltetes RS485-Netzwerk bilden.
+Im `examples/` Verzeichnis dieses Projekts finden Sie die Applikation `RS486SecureCom`. Diese demonstriert die Nutzung der `RS485SecureStack`-Bibliothek in einer realen Welt, verteilten Umgebung. Die Applikation besteht aus vier verschiedenen Sketchen, die auf verschiedenen Node-Typen (Scheduler, Submaster, Clients und Bus-Monitor) ausgeführt werden und gemeinsam ein sicheres und intelligent verwaltetes RS485-Netzwerk bilden.
 
 ### Systemübersicht (Graphic)
 
 ```doc
-
 +----------------+                   +----------------+
 |    Scheduler   | Master (Address 0)|                |
 |  ESP32-C3 Dev. |<----------------->|   RS485 Bus    |
@@ -152,9 +223,9 @@ Für jeden ESP32 (C3 und S3):
 Alle "A"-Pins der MAX485 Module werden miteinander verbunden, ebenso alle "B"-Pins.
 Der RS485-Bus sollte als eine durchgehende Linie (Daisy-Chain) und nicht als Stern-Topologie verdrahtet werden.
 
-### Betriebsszenarien der RS485SecureCom Applikation
+### Betriebsszenarien der RS486SecureCom Applikation
 
-Die `RS485SecureCom` Applikation demonstriert die Interaktion der verschiedenen Nodes in realen Betriebsszenarien, die auch die Sicherheits- und Safety-Funktionen des `RS485SecureStack` umfassen:
+Die `RS486SecureCom` Applikation demonstriert die Interaktion der verschiedenen Nodes in realen Betriebsszenarien, die auch die Sicherheits- und Safety-Funktionen des `RS485SecureStack` umfassen:
 
 1.  **Systemstart & Baudraten-Einmessung (Sketches: Scheduler, alle Clients/Submaster, Bus-Monitor)**
     * Alle Nodes starten auf einer Standard-Baudrate (z.B. 9600 bps).
@@ -239,7 +310,7 @@ Dieses umfassende Setup ermöglicht eine realitätsnahe Validierung der robusten
 
 ### Lizenz
 
-Dieses Projekt ist unter der **MIT-Lizenz** lizenziert. Details finden Sie in der [LICENSE](LICENSE)-Datei im Root-Verzeichnis dieses Repositories.
+Dieses Projekt ist unter der **MIT-Lizenz** lizenziert. Details finden Sie in der [LICENSE.md](LICENSE.md)-Datei im Root-Verzeichnis dieses Repositories.
 
 ### Disclaimer
 
