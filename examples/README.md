@@ -203,18 +203,29 @@ Für den Aufbau der vollständigen `RS485SecureCom`-Applikation benötigen Sie f
 
 ## 🔌 Verdrahtungshinweise (Allgemein)
 
-Für jeden ESP32 (C3 und S3) mit einem MAX485 Transceiver Modul:
+Die `RS485SecureCom`-Applikation nutzt den **Halbduplex-Betrieb** des RS485-Busses, da die verwendeten HW-159 Transceiver-Module diese Betriebsart effizient unterstützen. Diese Konfiguration ist besonders einfach zu verkabeln und erfordert, dass die Richtung des Datenflusses über einen dedizierten GPIO-Pin (DE/RE) gesteuert wird.
 
-* **ESP32 TX** an **MAX485 DI**
-* **ESP32 RX** an **MAX485 RO**
-* **ESP32 GPIO (DE/RE)** an **MAX485 DE & RE** (oft gebrückt) - **Dieser Pin muss im Sketch von `manageDERE(true)` für Senden und `manageDERE(false)` für Empfangen gesteuert werden!**
+Für jeden ESP32 (C3 und S3) mit einem MAX485 Transceiver Modul sollten die Verbindungen wie folgt hergestellt werden:
+
+* **ESP32 TX** an **MAX485 DI** (Driver Input)
+* **ESP32 RX** an **MAX485 RO** (Receiver Output)
+* **ESP32 GPIO (DE/RE)** an **MAX485 DE & RE** (Driver Enable & Receiver Enable, oft gebrückt auf dem Modul)
+    * Dieser GPIO-Pin muss im Sketch entsprechend gesetzt werden: `HIGH` für den Sendezustand (Driver Enable) und `LOW` für den Empfangszustand (Receiver Enable).
+    * **Wichtiger Hinweis:** Die `RS485SecureStack`-Bibliothek selbst übernimmt die Steuerung dieses Pins nicht direkt. Es obliegt dem Anwendungs-Sketch (wie in den `examples` gezeigt), den DE/RE-Pin über die Funktion `manageDERE(true)` (für Senden) und `manageDERE(false)` (für Empfangen) zu steuern.
+    * Für reine Lauschtests (z.B. mit dem Bus-Monitor) kann der Pin fest auf `LOW` belassen werden. Für Nodes, die aktiv senden (Master, Submaster, Clients), ist die korrekte Steuerung dieses Pins jedoch unerlässlich!
 * **MAX485 VCC** an **ESP32 3.3V**
 * **MAX485 GND** an **ESP32 GND**
 * **MAX485 A** an **RS485 Bus A**
 * **MAX485 B** an **RS485 Bus B**
 
 Alle "A"-Pins der MAX485 Module werden miteinander verbunden, ebenso alle "B"-Pins.
-Der RS485-Bus sollte als eine durchgehende Linie (Daisy-Chain) und nicht als Stern-Topologie verdrahtet werden.
+Die empfohlene Topologie für den RS485-Bus ist eine **durchgehende Linie (Daisy-Chain)**. Eine Stern-Topologie sollte vermieden werden, um Signalreflexionen und damit verbundene Kommunikationsprobleme zu minimieren.
+
+Für detailliertere Informationen zur RS485-Verkabelung und empfohlenen Topologien, konsultieren Sie bitte die folgenden Ressourcen:
+
+* [Renesas, White Paper: Schnittstellen für Industrie-PCs vereinfachen](https://www.renesas.com/en/document/whp/schnittstellen-f-r-industrie-pcs-vereinfachen#:~:text=RS%2D485%20unterst%C3%BCtzt%20Leitungsl%C3%A4ngen%20bis,in%20Bild%204%20dargestellt%20ist.)
+* [Renesas, Application Note, RS-485 Design Guide](https://www.renesas.com/en/document/apn/rs-485-design-guide-application-note#:~:text=Suggested%20Network%20Topology,-RS%2D485%20is&text=RS%2D485%20supports%20several%20topologies,each%20with%20a%20unique%20address.)
+
 
 ## 🚀 Erste Schritte
 
