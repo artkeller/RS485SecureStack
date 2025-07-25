@@ -12,7 +12,7 @@
 // Option 1: Für Module MIT einem DE/RE-Pin, der manuell gesteuert werden muss (z.B. einfache MAX485-Module)
 // #include "ManualDE_REDirectionControl.h" 
 
-// Option 2: Für Module OHNE externen DE/RE-Pin (mit automatischer Flussrichtung, z.B. bestimmte HW-159/HW-519)
+// Option 2: Für Module OHNE externen DE/RE-Pin (mit automatischer Flussrichtung, z.B. bestimmte HW-519)
 #include "AutomaticDirectionControl.h" 
 
 
