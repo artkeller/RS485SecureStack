@@ -1,3 +1,11 @@
+// File: bus_monitor_esp32.ino
+// App:  RS485SecureCom
+// Ver:  0.5.1 (Alpha)
+// Date: 20250725
+// Auth: Thomas Walloschke, artkeller@gmx.de
+// Lic:  MIT
+// (c):  2025 Thoams Walloschke
+
 #include "RS485SecureStack.h"
 #include "credantials.h" // Pre-Shared Master Key (MUSS AUF ALLEN DEVICES IDENTISCH SEIN!)
 
