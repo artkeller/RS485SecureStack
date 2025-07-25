@@ -239,7 +239,7 @@ Dieses umfassende Setup ermöglicht eine realitätsnahe Validierung der robusten
 
 ### Lizenz
 
-Dieses Projekt ist unter der **MIT-Lizenz** lizenziert. Details finden Sie in der [LICENSE.md](LICENSE.md)-Datei im Root-Verzeichnis dieses Repositories.
+Dieses Projekt ist unter der **MIT-Lizenz** lizenziert. Details finden Sie in der [LICENSE](LICENSE)-Datei im Root-Verzeichnis dieses Repositories.
 
 ### Disclaimer
 
