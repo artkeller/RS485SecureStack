@@ -1,178 +1,278 @@
+#include <Arduino.h>
+#include <HardwareSerial.h>
+#include <string>
+#include <StreamString.h>
+
+// Lokale Bibliotheks-Includes
 #include "RS485SecureStack.h"
-#include "credantials.h" // Pre-Shared Master Key (MUSS AUF ALLEN DEVICES IDENTISCH SEIN!)
+#include "credentials.h" // Enthält MASTER_KEY
 
-// --- RS485 Konfiguration ---
-HardwareSerial& rs485Serial = Serial1;
-const int RS485_DE_RE_PIN = 3; // Beispiel GPIO für DE/RE Pin, anpassen!
-const byte MY_ADDRESS = 11; // Diesen Wert für jeden Client anpassen (z.B. 11 oder 12) 
+// WICHTIG: Wählen Sie EINE der folgenden Zeilen, je nach Ihrem RS485-Modul:
+// Option 1: Für Module MIT einem DE/RE-Pin, der manuell gesteuert werden muss (z.B. einfache MAX485-Module)
+#include "ManualDE_REDirectionControl.h" 
 
-RS485SecureStack rs485Stack(rs485Serial, MY_ADDRESS, MASTER_KEY); [cite: 3]
+// Option 2: Für Module OHNE externen DE/RE-Pin (mit automatischer Flussrichtung, z.B. bestimmte HW-159/HW-519)
+// #include "AutomaticDirectionControl.h" 
 
-// --- Master Heartbeat Monitoring ---
-unsigned long lastMasterHeartbeatRxTime = 0;
-const unsigned long MASTER_HEARTBEAT_TIMEOUT_MS = 1000; // Wenn Master länger als 1 Sekunde still ist, als offline betrachten 
-bool masterIsPresent = false; [cite: 3]
+// ==============================================================================
+// GLOBAL KONFIGURATION (Client-spezifisch)
+// ==============================================================================
+#define MY_ADDRESS 11 // ANPASSEN: Eindeutige Adresse für diesen Client (z.B. 11, 12, etc.)
+#define SUBMASTER_ADDRESS 1 // ANPASSEN: Adresse des Submasters, dem dieser Client zugeordnet ist
+#define INITIAL_KEY_ID 0 // Startet mit Key ID 0
 
-// --- Client State ---
+#define SUBMASTER_POLL_TIMEOUT_MS 10000 // Wenn länger kein Poll vom Submaster, gehe in Wartezustand
+#define STATUS_REPORT_INTERVAL_MS 3000 // Alle 3 Sekunden eigenen Status an Submaster melden
+
+// ==============================================================================
+// STATE MACHINE FÜR CLIENT
+// ==============================================================================
 enum ClientState {
-    CLIENT_STATE_WAITING_FOR_MASTER,
-    CLIENT_STATE_IDLE
+    STATE_WAITING_FOR_SUBMASTER, // Wartet auf Poll vom Submaster oder Baudrate-Set
+    STATE_ONLINE,                // Mit Submaster verbunden, normaler Betrieb
+    STATE_ERROR                  // Allgemeiner Fehlerzustand
 };
-ClientState currentClientState = CLIENT_STATE_WAITING_FOR_MASTER; [cite: 3]
 
-// --- Rekeying ---
-uint16_t currentSessionKeyId = 0; [cite: 3]
-// Note: Clients receive new keys from the Master and update their stack.
-// They don't generate keys. 
+ClientState currentClientState = STATE_WAITING_FOR_SUBMASTER;
 
-// --- Callbacks ---
-void onPacketReceived(byte senderAddr, char msgType, const String& payload);
-void manageDERE(bool transmit); // Function to control DE/RE pin
+// ==============================================================================
+// Globale Variablen für den Client
+// ==============================================================================
+unsigned long lastSubmasterPollMillis = 0;
+unsigned long lastStatusReportMillis = 0;
+long currentBaudRate = RS485_INITIAL_BAUD_RATE;
+uint8_t currentKeyId = INITIAL_KEY_ID;
 
-// NEU: Utility-Funktion zur Konvertierung eines Hex-Strings in ein Byte-Array
-// Gibt die Anzahl der in den Buffer geschriebenen Bytes zurück, oder 0 bei Fehler.
-size_t hexStringToBytes(const String& hexString, byte* buffer, size_t bufferSize) {
-    if (hexString.length() % 2 != 0) return 0; // Muss eine gerade Länge haben
-    size_t byteLength = hexString.length() / 2;
-    if (byteLength > bufferSize) return 0; // Buffer zu klein
+// Definition der UART für RS485
+HardwareSerial& rs485Serial = Serial1; // Beispiel: UART1 des ESP32
 
-    for (size_t i = 0; i < byteLength; i++) {
-        char hexPair[3]; // Zwei Zeichen + Null-Terminator
-        hexString.substring(i * 2, i * 2 + 2).toCharArray(hexPair, 3);
-        buffer[i] = (byte)strtol(hexPair, NULL, 16); // Konvertiere Hex in Byte
-    }
-    return byteLength;
-}
+// ==============================================================================
+// HIER WÄHLT DER ENTWICKLER SEINE HARDWARE-ABSTRAKTION FÜR DIE FLUSSRICHTUNGSSTEUERUNG
+// = = = > WÄHLEN SIE EINE DER FOLGENDEN ZEILEN UND PASSEN SIE DIE PINS AN < = = =
+// ==============================================================================
+
+// Option 1: Für Module MIT einem DE/RE-Pin, der manuell gesteuert werden muss
+//   Der GPIO-Pin muss an den DE/RE-Pin Ihres RS485-Moduls angeschlossen werden.
+const int RS485_DE_RE_PIN = 3; // ANPASSEN: Beispiel-GPIO für DE/RE Pin des ESP32
+ManualDE_REDirectionControl myDirectionControl(RS485_DE_RE_PIN);
+
+// Option 2: Für Module OHNE externen DE/RE-Pin (mit automatischer Flussrichtung)
+//   Für diese Module sind KEINE zusätzlichen GPIOs für DE/RE notwendig.
+// AutomaticDirectionControl myDirectionControl;
+
+// ==============================================================================
+// Globales Objekt für den Stack - ÜBERGABE DES DIRECTIONCONTROL-OBJEKTS
+// ==============================================================================
+RS485SecureStack rs485Stack(&myDirectionControl);
+
+// ==============================================================================
+// Funktionsprototypen
+// ==============================================================================
+void onPacketReceived(RS485SecureStack::Packet_t packet);
+void reportStatusToSubmaster();
+void processBaudRateSet(const String& payload);
+void processKeyUpdate(const String& payload);
 
 void setup() {
-  Serial.begin(115200); // USB-Serial für Debugging
-  pinMode(RS485_DE_RE_PIN, OUTPUT);
-  manageDERE(false); // Start in Receive Mode
-  rs485Stack.begin(9600); // RS485-Stack initialisieren (startet mit Basis-Baudrate) 
+    Serial.begin(115200);
+    delay(1000);
+    Serial.printf("\n--- RS485SecureStack Client (Address %d) ---\n", MY_ADDRESS);
 
-  Serial.print("Client ESP32-C3 gestartet, Adresse: ");
-  Serial.println(MY_ADDRESS);
-  rs485Stack.registerReceiveCallback(onPacketReceived);
-  rs485Stack.setAckEnabled(true); // Client muss ACKs senden 
+    // Seed the random number generator
+    randomSeed(analogRead(0));
 
-  lastMasterHeartbeatRxTime = millis(); // Assume master is present at startup for initial state 
+    // Initialisiere RS485SecureStack
+    // Die myDirectionControl.begin() wird nun automatisch in rs485Stack.begin() aufgerufen
+    rs485Stack.begin(MY_ADDRESS, MASTER_KEY, INITIAL_KEY_ID, rs485Serial);
+    rs485Stack.registerReceiveCallback(onPacketReceived);
+    rs485Stack.setDebug(true); // Debug-Ausgaben aktivieren
+
+    lastSubmasterPollMillis = millis();
+    lastStatusReportMillis = millis();
+    Serial.println("Client: Initialisierung abgeschlossen. Warte auf Submaster.");
 }
 
 void loop() {
-  rs485Stack.processIncoming(); // Pakete empfangen und verarbeiten 
-  manageDERE(false); // Ensure we are in receive mode by default
+    rs485Stack.loop(); // Empfängt Pakete
 
-  // --- Master-Anwesenheit prüfen ---
-  if (millis() - lastMasterHeartbeatRxTime > MASTER_HEARTBEAT_TIMEOUT_MS) {
-    if (masterIsPresent) {
-      Serial.println("!!! WARNING: MASTER HEARTBEAT TIMEOUT! Master is GONE or SILENT !!!"); [cite: 3]
-      masterIsPresent = false;
-      currentClientState = CLIENT_STATE_WAITING_FOR_MASTER; // Go to a safe state
+    // Submaster-Präsenz überprüfen
+    if (currentClientState == STATE_ONLINE && millis() - lastSubmasterPollMillis > SUBMASTER_POLL_TIMEOUT_MS) {
+        Serial.println("ERR: Submaster-Poll Timeout. Gehe in Wartezustand.");
+        currentClientState = STATE_WAITING_FOR_SUBMASTER;
     }
-  } else {
-    if (!masterIsPresent) {
-      Serial.println("!!! MASTER HEARTBEAT RESTORED! !!!"); [cite: 3]
-      masterIsPresent = true;
-      if (currentClientState == CLIENT_STATE_WAITING_FOR_MASTER) {
-        currentClientState = CLIENT_STATE_IDLE; // Resume normal flow
-      }
+
+    switch (currentClientState) {
+        case STATE_WAITING_FOR_SUBMASTER:
+            // Warte auf Baudrate-Set oder Poll vom Submaster
+            Serial.print("."); // Lebenszeichen
+            delay(500);
+            break;
+
+        case STATE_ONLINE:
+            if (millis() - lastStatusReportMillis > STATUS_REPORT_INTERVAL_MS) {
+                reportStatusToSubmaster();
+                lastStatusReportMillis = millis();
+            }
+            // Hier könnten weitere client-spezifische Aufgaben ausgeführt werden
+            // z.B. Sensordaten lesen, Aktoren steuern etc.
+            break;
+
+        case STATE_ERROR:
+            Serial.println("!!!! CLIENT IN ERROR STATE - REBOOT REQUIRED !!!!");
+            delay(1000);
+            break;
     }
-  }
-
-  if (!masterIsPresent) {
-      // If master is not present, remain in a passive state. Do not send data. 
-      return;
-  }
-
-  // Clients sind meist passiv, d.h., sie warten auf Anfragen und antworten dann. 
-  // Hier keine aktive Sendelogik, außer als Reaktion auf empfangene Pakete.
-  // Serial.println("Client is idle, waiting for commands.");
-  delay(100); // Reduce busy waiting
 }
 
-// Callback-Funktion, wird von RS485SecureStack aufgerufen
-void onPacketReceived(byte senderAddr, char msgType, const String& payload) {
-  // --- Master Heartbeat verarbeiten ---
-  if (senderAddr == 0 && msgType == RS485SecureStack::MSG_TYPE_MASTER_HEARTBEAT) {
-      lastMasterHeartbeatRxTime = millis(); [cite: 3]
-      rs485Stack.sendAckNack(senderAddr, msgType, true); // ACK, um den Master zu beruhigen
-      return; // Heartbeat-Pakete werden sonst nicht weiter verarbeitet
-  }
+// ==============================================================================
+// Callback-Funktion für den RS485SecureStack
+// ==============================================================================
+void onPacketReceived(RS485SecureStack::Packet_t packet) {
+    // Wenn Paket nicht für uns ist (oder Broadcast), und keine eigene Adresse, ignorieren
+    if (packet.destinationAddress != MY_ADDRESS && packet.destinationAddress != 255) {
+        // Serial.printf("DBG: Paket für Adresse %d, nicht für mich (%d). Ignoriere.\n", packet.destinationAddress, MY_ADDRESS);
+        return;
+    }
 
-  // --- Baudraten-Anpassung vom Master verarbeiten ---
-  if (senderAddr == 0 && msgType == RS485SecureStack::MSG_TYPE_BAUD_RATE_SET) {
-      long newBaudRate = payload.toLong();
-      Serial.print("Client: Baud Rate Set Request from Master for: ");
-      Serial.println(newBaudRate);
-      rs485Serial.begin(newBaudRate); // HardwareSerial wechseln
-      rs485Stack._setBaudRate(newBaudRate); // Stack informieren
-      rs485Stack.sendAckNack(senderAddr, msgType, true);
-      return;
-  }
+    // Prüfe auf HMAC und CRC Fehler
+    if (!packet.hmacVerified) {
+        Serial.printf("ERR: Paket von %d hatte HMAC Fehler! Payload: '%s'\n", packet.senderAddress, packet.payload.c_str());
+        return; // Paket mit HMAC-Fehler ignorieren
+    }
+    if (!packet.crcVerified) {
+        Serial.printf("ERR: Paket von %d hatte CRC Fehler! Payload: '%s'\n", packet.senderAddress, packet.payload.c_str());
+        return; // Paket mit CRC-Fehler ignorieren
+    }
 
-  // --- NEU: Schlüssel-Update vom Master verarbeiten ---
-  // Erwartetes Format: "KEY_UPDATE:<keyId_dezimal>:<hexKeyString>"
-  if (senderAddr == 0 && msgType == RS485SecureStack::MSG_TYPE_KEY_UPDATE) {
-      Serial.println("Client: Received Key Update message from Master.");
-      int firstColon = payload.indexOf(':');
-      int secondColon = payload.indexOf(':', firstColon + 1);
+    // Wenn es ein ACK/NACK für UNS ist, wird es intern vom sendMessage() in RS485SecureStack gehandhabt.
+    // Hier kommen nur Pakete an, die der Stack nicht selbst verarbeitet hat.
+    if (packet.isAck) {
+        Serial.printf("DBG: ACK/NACK von %d, aber nicht für meine wartende Nachricht. Ignoriere im Callback.\n", packet.senderAddress);
+        return;
+    }
 
-      if (firstColon != -1 && secondColon != -1) {
-          String prefix = payload.substring(0, firstColon);
-          if (prefix == "KEY_UPDATE") {
-              uint16_t newKeyId = payload.substring(firstColon + 1, secondColon).toInt();
-              String hexKeyString = payload.substring(secondColon + 1);
+    // Behandlung anderer Nachrichtentypen
+    switch (packet.messageType) {
+        case MSG_TYPE_MASTER_HEARTBEAT: // Clients ignorieren Master-Heartbeats
+            Serial.printf("RCV: Master Heartbeat von %d. Ignoriere.\n", packet.senderAddress);
+            break;
 
-              byte newKey[AES_KEY_SIZE]; // Annahme: AES_KEY_SIZE ist 16
-              size_t bytesRead = hexStringToBytes(hexKeyString, newKey, AES_KEY_SIZE);
+        case MSG_TYPE_BAUD_RATE_SET:
+            Serial.printf("RCV: Baud Rate Set von %d: '%s'\n", packet.senderAddress, packet.payload.c_str());
+            processBaudRateSet(packet.payload);
+            // Nach Baudrate-Set, zurück in den Wartezustand für Submaster-Signale
+            currentClientState = STATE_WAITING_FOR_SUBMASTER;
+            lastSubmasterPollMillis = millis(); // Reset Timeout
+            break;
 
-              if (bytesRead == AES_KEY_SIZE) {
-                  rs485Stack.setSessionKey(newKeyId, newKey); // Schlüssel im Pool speichern
-                  rs485Stack.setCurrentKeyId(newKeyId);     // Aktuellen Schlüssel setzen
-                  Serial.print("Client: New session key set for ID ");
-                  Serial.println(newKeyId);
-                  currentSessionKeyId = newKeyId; // Aktualisiere die lokale Variable
-                  rs485Stack.sendAckNack(senderAddr, msgType, true); // ACK senden
-                  return; // Paket verarbeitet
-              } else {
-                  Serial.println("Client: ERROR parsing hex key string from update message.");
-              }
-          } else {
-             Serial.println("Client: ERROR: Key Update message has unexpected prefix.");
-          }
-      } else {
-          Serial.println("Client: ERROR: Key Update message has unexpected format.");
-      }
-  }
+        case MSG_TYPE_KEY_UPDATE:
+            Serial.printf("RCV: Key Update von %d: '%s'\n", packet.senderAddress, packet.payload.c_str());
+            processKeyUpdate(packet.payload);
+            // Nach Key-Update, zurück in den Wartezustand für Submaster-Signale
+            currentClientState = STATE_WAITING_FOR_SUBMASTER;
+            lastSubmasterPollMillis = millis(); // Reset Timeout
+            break;
 
-  // --- Beispiel für eine Daten-Nachricht vom Submaster (oder Master) ---
-  if (msgType == RS485SecureStack::MSG_TYPE_DATA) {
-      Serial.print("Client: Received DATA from ");
-      Serial.print(senderAddr);
-      Serial.print(": '");
-      Serial.print(payload);
-      Serial.println("'");
-      // Optional: Eine Antwort senden
-      // manageDERE(true);
-      // rs485Stack.sendMessage(senderAddr, RS485SecureStack::MSG_TYPE_ACK, "DATA_RECEIVED");
-      // manageDERE(false);
-  }
+        case MSG_TYPE_DATA:
+            Serial.printf("RCV: DATA von %d: '%s'\n", packet.senderAddress, packet.payload.c_str());
+            if (packet.senderAddress == SUBMASTER_ADDRESS && packet.payload.equals("GET_STATUS")) {
+                Serial.println("Client: Status-Anfrage vom Submaster erhalten.");
+                lastSubmasterPollMillis = millis(); // Submaster ist aktiv
+                currentClientState = STATE_ONLINE; // Client ist online und bereit
 
-  // Debug-Ausgabe für alle empfangenen Pakete
-  Serial.print("Received from ");
-  Serial.print(senderAddr);
-  Serial.print(", Type: ");
-  Serial.print(msgType);
-  Serial.print(", Payload: '");
-  Serial.print(payload);
-  Serial.println("'");
+                // Sende sofort eine Antwort auf die Statusanfrage
+                reportStatusToSubmaster();
+            } else {
+                Serial.println("Client: Unbekannte Daten-Nachricht.");
+            }
+            break;
+
+        default:
+            Serial.printf("RCV: Unerwarteter Nachrichtentyp '%c' von %d.\n", packet.messageType, packet.senderAddress);
+            break;
+    }
 }
 
-// Funktion zum Steuern des DE/RE Pins
-void manageDERE(bool transmit) {
-  if (transmit) {
-    digitalWrite(RS485_DE_RE_PIN, HIGH); // Senden aktivieren
-  } else {
-    digitalWrite(RS485_DE_RE_PIN, LOW); // Empfangen aktivieren
-  }
+// ==============================================================================
+// Client-Funktionen
+// ==============================================================================
+void reportStatusToSubmaster() {
+    Serial.println("Client: Melde Status an Submaster.");
+    StreamString payload;
+    // Beispiel: Sende Temperatur und Luftfeuchtigkeit
+    float temperature = random(200, 300) / 10.0; // 20.0 - 30.0
+    float humidity = random(400, 600) / 10.0;    // 40.0 - 60.0
+    payload.printf("TEMP_HUMID:%.1f,%.1f", temperature, humidity);
+    
+    // Status an den Submaster senden, kein ACK erforderlich (Submaster poll_Clientt ja Heartbeat)
+    if (!rs485Stack.sendMessage(SUBMASTER_ADDRESS, MY_ADDRESS, MSG_TYPE_DATA, payload.c_str(), false)) {
+        Serial.println("ERR: Fehler beim Senden des Status an Submaster.");
+    }
+}
+
+void processBaudRateSet(const String& payload) {
+    long newBaudRate = payload.toInt();
+    if (newBaudRate > 0 && newBaudRate != currentBaudRate) {
+        Serial.printf("Client: Baudrate auf %ld eingestellt.\n", newBaudRate);
+        rs485Stack.setBaudRate(newBaudRate);
+        currentBaudRate = newBaudRate;
+    } else {
+        Serial.printf("Client: Baudrate-Set ungültig oder gleiche Baudrate: %s\n", payload.c_str());
+    }
+}
+
+void processKeyUpdate(const String& payload) {
+    // Payload ist JSON, z.B. {"keyID":1,"sessionKey":"base64_encoded_encrypted_key","iv":"hex_iv"}
+    
+    // JSON-Parsing (einfach gehalten für PoC, in Prod: ArduinoJson verwenden)
+    int keyIdIndex = payload.indexOf("\"keyID\":");
+    int sessionKeyIndex = payload.indexOf("\"sessionKey\":\"");
+    int ivIndex = payload.indexOf("\"iv\":\"");
+    
+    if (keyIdIndex == -1 || sessionKeyIndex == -1 || ivIndex == -1) {
+        Serial.println("ERR: Key Update Payload ungültig (JSON-Fehler).");
+        return;
+    }
+
+    uint8_t newKeyId = payload.substring(keyIdIndex + 8).toInt();
+    
+    String encryptedKeyHex = payload.substring(sessionKeyIndex + 14, payload.indexOf("\"", sessionKeyIndex + 14));
+    String ivHex = payload.substring(ivIndex + 6, payload.indexOf("\"", ivIndex + 6));
+
+    if (encryptedKeyHex.length() != 64 || ivHex.length() != 32) { // 32 Bytes Key -> 64 Hex-Chars, 16 Bytes IV -> 32 Hex-Chars
+        Serial.println("ERR: Key Update Payload: Hex-Länge ungültig.");
+        return;
+    }
+
+    uint8_t encryptedSessionKey[32];
+    uint8_t iv[16];
+
+    // Konvertierung von Hex-String zu Bytes
+    for (int i = 0; i < 32; ++i) {
+        encryptedSessionKey[i] = (uint8_t)strtol(encryptedKeyHex.substring(i * 2, (i * 2) + 2).c_str(), NULL, 16);
+    }
+    for (int i = 0; i < 16; ++i) {
+        iv[i] = (uint8_t)strtol(ivHex.substring(i * 2, (i * 2) + 2).c_str(), NULL, 16);
+    }
+
+    // Entschlüsseln des Session Keys mit dem Master Key
+    AES256 aes256;
+    uint8_t masterKeyHash[32];
+    SHA256 sha256;
+    sha256.reset();
+    sha256.update(MASTER_KEY, strlen(MASTER_KEY));
+    sha256.finalize(masterKeyHash, sizeof(masterKeyHash));
+
+    aes256.setKey(masterKeyHash, aes256.keySize());
+    aes256.setIV(iv, aes256.ivSize());
+    aes256.decryptCBC(encryptedSessionKey, 32);
+
+    // Neuen Session Key im Stack setzen
+    if (rs485Stack.setSessionKey(newKeyId, encryptedSessionKey, sizeof(encryptedSessionKey))) {
+        rs485Stack.setCurrentKeyId(newKeyId);
+        currentKeyId = newKeyId;
+        Serial.printf("Client: Erfolgreich neuen Session Key (ID %d) gesetzt.\n", currentKeyId);
+    } else {
+        Serial.println("ERR: Fehler beim Setzen des neuen Session Keys.");
+    }
 }
