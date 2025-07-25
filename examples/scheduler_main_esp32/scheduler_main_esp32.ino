@@ -1,313 +1,455 @@
+#include <Arduino.h>
+#include <HardwareSerial.h>
+#include <map> // Für die Verwaltung der verbundenen Nodes
+#include <vector> // Für dynamische Arrays
+#include <string> // Für String-Manipulationen
+#include <StreamString.h> // Für Stream-Operationen
+
+// Lokale Bibliotheks-Includes
 #include "RS485SecureStack.h"
-#include "credantials.h" // Pre-Shared Master Key (MUSS AUF ALLEN DEVICES IDENTISCH SEIN!)
-#include "KeyRotationManager.h" // NEU: Key Rotation Manager
-#include <map> // For tracking client states
-#include <vector> // For managing nodes
+#include "credentials.h" // Enthält MASTER_KEY, MY_ADDRESS etc.
 
-// --- RS485 Konfiguration ---
-HardwareSerial& rs485Serial = Serial1;
-const int RS485_DE_RE_PIN = 3; // Beispiel GPIO für DE/RE Pin, anpassen!
+// WICHTIG: Wählen Sie EINE der folgenden Zeilen, je nach Ihrem RS485-Modul:
+// Option 1: Für Module MIT einem DE/RE-Pin, der manuell gesteuert werden muss (z.B. einfache MAX485-Module)
+#include "ManualDE_REDirectionControl.h" 
 
-const byte MY_ADDRESS = 0; // Master/Scheduler Adresse
+// Option 2: Für Module OHNE externen DE/RE-Pin (mit automatischer Flussrichtung, z.B. bestimmte HW-159/HW-519)
+// #include "AutomaticDirectionControl.h" 
 
-RS485SecureStack rs485Stack(rs485Serial, MY_ADDRESS, MASTER_KEY);
-KeyRotationManager keyManager; // NEU: Instanz des KeyRotationManagers
 
-// --- Master Management State ---
-enum MasterState {
-    MASTER_STATE_INITIALIZING,
-    MASTER_STATE_BAUD_RATE_TESTING,
-    MASTER_STATE_OPERATIONAL,
-    MASTER_STATE_ROUGE_MASTER_DETECTED // Safety state
+// ==============================================================================
+// GLOBAL KONFIGURATION (Scheduler-spezifisch)
+// ==============================================================================
+#define MY_ADDRESS 0 // Master ist immer Adresse 0
+#define CURRENT_KEY_ID 0 // Startet mit Key ID 0
+
+#define MASTER_HEARTBEAT_INTERVAL_MS 5000 // Alle 5 Sekunden einen Heartbeat senden
+#define BAUD_RATE_MEASUREMENT_INTERVAL_MS 60000 // Alle 60 Sekunden Baudrate einmessen (nur PoC)
+#define REKEYING_INTERVAL_MS 300000 // Alle 5 Minuten Rekeying starten (nur PoC)
+#define NODE_TIMEOUT_MS 15000 // Wenn keine Kommunikation von Node in dieser Zeit, als offline markieren
+
+// Liste der zu testenden Baudraten für die Einmessung
+const long TEST_BAUD_RATES[] = {115200L, 57600L, 38400L, 19200L, 9600L};
+const int NUM_BAUD_RATES = sizeof(TEST_BAUD_RATES) / sizeof(TEST_BAUD_RATES[0]);
+
+// ==============================================================================
+// STATE MACHINE FÜR SCHEDULER
+// ==============================================================================
+enum SchedulerState {
+    STATE_INIT_BUS,             // Bus initialisieren, Baudrate einmessen
+    STATE_NORMAL_OPERATION,     // Normaler Betrieb, Heartbeats senden, Kommunikation verwalten
+    STATE_REKEYING,             // Schlüsselupdate durchführen
+    STATE_ROGUEMASTER_DETECTED, // Rogue Master erkannt, sicherer Zustand
+    STATE_ERROR                 // Allgemeiner Fehlerzustand
 };
-MasterState currentMasterState = MASTER_STATE_INITIALIZING; [cite: 1]
 
-// --- Node Management ---
-struct NodeInfo {
-    byte address;
-    unsigned long lastContactTime;
-    unsigned int ackCount;
-    unsigned int nackCount;
-    bool isSubmaster;
-}; [cite: 1]
+SchedulerState currentSchedulerState = STATE_INIT_BUS;
 
-std::map<byte, NodeInfo> connectedNodes;
-std::vector<byte> submasterQueue; // Queue for token passing
-int currentSubmasterIdx = 0;
+// ==============================================================================
+// Globale Variablen für den Scheduler
+// ==============================================================================
+unsigned long lastHeartbeatMillis = 0;
+unsigned long lastBaudRateMeasurementMillis = 0;
+unsigned long lastRekeyingMillis = 0;
+unsigned long rekeyingStartTime = 0;
+int currentBaudRateIndex = 0;
+bool baudRateSetAckReceived = false;
+uint8_t nextKeyId = 1; // Startet mit Key ID 1 für das erste Rekeying
 
-// --- Baud Rate Management ---
-const long BAUD_RATES[] = {9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600};
-const int NUM_BAUD_RATES = sizeof(BAUD_RATES) / sizeof(BAUD_RATES[0]); [cite: 1]
-int currentBaudRateIdx = 0;
-long activeBaudRate = 0;
-unsigned long baudRateTestStartTime = 0;
-const unsigned long BAUD_RATE_TEST_DURATION_MS = 2000; // Test each baud rate for 2 seconds 
-const int MIN_TEST_ACKS = 5; // Minimum ACKs expected during a test
-long bestBaudRate = 9600;
+// Node-Zustandsverwaltung
+struct NodeStatus {
+    unsigned long lastSeenMillis;
+    bool isOnline;
+    bool permissionToSend; // Nur für Submaster relevant
+    bool awaitingAck;      // Für Baudrate/Key-Update ACKs
+};
+std::map<uint8_t, NodeStatus> connectedNodes; // Key: Node-Adresse
 
-// --- Master Heartbeat ---
-unsigned long lastHeartbeatTime = 0;
-const unsigned long HEARTBEAT_INTERVAL_MS = 200; // Send heartbeat every 200ms 
-const unsigned long ROUGE_MASTER_TIMEOUT_MS = 500; // If rogue master heartbeats are too frequent, declare collision 
-unsigned long lastRogueHeartbeatTime = 0; // Time of last detected rogue heartbeat
-byte rogueMasterAddress = 0;
+// Baudrate-Management für Rekeying
+long rekeyingBaudRate = 0;
+unsigned long rekeyingAckCount = 0; // Anzahl der ACKs für Rekeying
 
-// --- Rekeying Interval ---
-// Das Rekeying-Intervall wird nun vom KeyRotationManager verwendet.
-const unsigned long REKEY_INTERVAL_MS = 60 * 60 * 1000; // Rekey every hour 
+// Zähler für Statistiken
+unsigned long packetsSent = 0;
+unsigned long packetsReceived = 0;
+unsigned long heartbeatCounter = 0;
+unsigned long hmacErrors = 0;
+unsigned long crcErrors = 0;
 
-// --- Callbacks ---
-void onPacketReceived(byte senderAddr, char msgType, const String& payload);
-void manageDERE(bool transmit); // Function to control DE/RE pin
+// Definition der UART für RS485
+HardwareSerial& rs485Serial = Serial1; // Beispiel: UART1 des ESP32
 
-// NEU: Utility-Funktion zur Konvertierung eines Byte-Arrays in einen Hex-String
-String bytesToHexString(const byte* bytes, size_t len) {
-    String hexString = "";
-    for (size_t i = 0; i < len; i++) {
-        if (bytes[i] < 0x10) {
-            hexString += "0";
-        }
-        hexString += String(bytes[i], HEX);
-    }
-    return hexString;
-}
+// ==============================================================================
+// HIER WÄHLT DER ENTWICKLER SEINE HARDWARE-ABSTRAKTION FÜR DIE FLUSSRICHTUNGSSTEUERUNG
+// = = = > WÄHLEN SIE EINE DER FOLGENDEN ZEILEN UND PASSEN SIE DIE PINS AN < = = =
+// ==============================================================================
 
-// NEU: Callback-Funktion für die Schlüsselgenerierung und -verteilung
-// Diese Funktion wird vom KeyRotationManager aufgerufen, wenn ein neuer Schlüssel benötigt wird.
-void handleKeyGenerationAndDistribution(uint16_t newKeyId, const byte newKey[AES_KEY_SIZE]) {
-    Serial.print("Master: Initiating key rotation. New Key ID: ");
-    Serial.println(newKeyId);
+// Option 1: Für Module MIT einem DE/RE-Pin, der manuell gesteuert werden muss
+//   Der GPIO-Pin muss an den DE/RE-Pin Ihres RS485-Moduls angeschlossen werden.
+const int RS485_DE_RE_PIN = 3; // ANPASSEN: Beispiel-GPIO für DE/RE Pin des ESP32
+ManualDE_REDirectionControl myDirectionControl(RS485_DE_RE_PIN);
 
-    // 1. Neuen Schlüssel im eigenen Stack speichern und als aktuellen Schlüssel setzen
-    rs485Stack.setSessionKey(newKeyId, newKey);
-    rs485Stack.setCurrentKeyId(newKeyId);
-    Serial.println("Master: New key set and activated locally.");
+// Option 2: Für Module OHNE externen DE/RE-Pin (mit automatischer Flussrichtung)
+//   Für diese Module sind KEINE zusätzlichen GPIOs für DE/RE notwendig.
+// AutomaticDirectionControl myDirectionControl;
 
-    // 2. Neuen Schlüssel an alle bekannten Clients und Submaster verteilen
-    // Das Payload-Format ist "KEY_UPDATE:<keyId_dezimal>:<hexKeyString>"
-    String hexKeyString = bytesToHexString(newKey, AES_KEY_SIZE);
-    String payload = "KEY_UPDATE:" + String(newKeyId) + ":" + hexKeyString;
+// ==============================================================================
+// Globales Objekt für den Stack - ÜBERGABE DES DIRECTIONCONTROL-OBJEKTS
+// ==============================================================================
+RS485SecureStack rs485Stack(&myDirectionControl); 
 
-    // Sicherstellen, dass der DE/RE Pin im Sendemodus ist
-    manageDERE(true);
-    delay(10); // Kurze Pause nach DE/RE Umschaltung für Bus-Stabilität
+// ==============================================================================
+// Funktionsprototypen
+// ==============================================================================
+void onPacketReceived(RS485SecureStack::Packet_t packet);
+void manageBaudRateMeasurement();
+void manageRekeying();
+void sendHeartbeat();
+void updateNodeStatus(uint8_t address);
+void checkNodeTimeouts();
+void sendPermissionToSubmaster(uint8_t submasterAddress);
+void generateAndSendNewKey();
 
-    for (auto const& [addr, node] : connectedNodes) {
-        if (addr != MY_ADDRESS) { // Nicht an sich selbst senden
-            Serial.print("Master: Sending key update to node ");
-            Serial.print(addr);
-            Serial.print(" with payload: ");
-            Serial.println(payload);
-            rs485Stack.sendMessage(addr, RS485SecureStack::MSG_TYPE_KEY_UPDATE, payload);
-            delay(20); // Kleine Verzögerung zwischen den Nachrichten, um Bus-Kollisionen zu vermeiden
-        }
-    }
-    manageDERE(false); // Zurück in den Empfangsmodus
-
-    Serial.println("Master: Key update messages broadcasted.");
-}
 
 void setup() {
-  Serial.begin(115200); // USB-Serial für Debugging
-  pinMode(RS485_DE_RE_PIN, OUTPUT);
-  manageDERE(false); // Start in Receive Mode
-  rs485Stack.begin(9600); // RS485-Stack initialisieren mit Basis-Baudrate
+    Serial.begin(115200);
+    delay(1000);
+    Serial.println("\n--- RS485SecureStack Scheduler (Master) ---");
 
-  Serial.println("Scheduler (Master) ESP32-C3 gestartet.");
-  
-  rs485Stack.registerReceiveCallback(onPacketReceived);
-  rs485Stack.setAckEnabled(true); // Master muss ACKs empfangen können
+    // Seed the random number generator
+    randomSeed(analogRead(0));
 
-  // --- NEU: KeyRotationManager initialisieren ---
-  // Der Manager generiert und verteilt nun den initialen Schlüssel sowie alle weiteren.
-  keyManager.begin(handleKeyGenerationAndDistribution, &rs485Stack, REKEY_INTERVAL_MS);
-  rs485Stack.setKeyRotationManager(&keyManager);
+    // Initialisiere RS485SecureStack
+    // Die myDirectionControl.begin() wird nun automatisch in rs485Stack.begin() aufgerufen
+    rs485Stack.begin(MY_ADDRESS, MASTER_KEY, CURRENT_KEY_ID, rs485Serial);
+    rs485Stack.registerReceiveCallback(onPacketReceived);
+    rs485Stack.setDebug(true); // Debug-Ausgaben aktivieren
 
-  // Die manuelle Initialisierung der Session Keys entfällt hier,
-  // da der KeyRotationManager den initialen Schlüssel erzeugt und verteilt.
-  // const byte initialKey0[16] = { ... };
-  // const byte initialKey1[16] = { ... };
-  // rs485Stack.setSessionKey(0, initialKey0);
-  // rs485Stack.setSessionKey(1, initialKey1);
-  // rs485Stack.setCurrentKeyId(0); 
+    // Füge die erwarteten Nodes zur Map hinzu (Beispiel)
+    connectedNodes[1] = {0, false, false, false}; // Submaster 1
+    connectedNodes[2] = {0, false, false, false}; // Submaster 2
+    connectedNodes[11] = {0, false, false, false}; // Client 11 (zugeordnet zu Submaster 1)
+    connectedNodes[12] = {0, false, false, false}; // Client 12 (zugeordnet zu Submaster 2)
 
-  // Definiere die bekannten Nodes (für PoC fest verdrahtet)
-  connectedNodes[1] = {1, 0, 0, 0, true}; // Submaster 1 
-  connectedNodes[2] = {2, 0, 0, 0, true}; // Submaster 2 
-  submasterQueue.push_back(1);
-  submasterQueue.push_back(2);
-  // Clients (reagieren auf Anfragen)
-  connectedNodes[11] = {11, 0, 0, 0, false}; // Client 11 
-  connectedNodes[12] = {12, 0, 0, 0, false}; // Client 12 
-
-  // Beginne mit Baudraten-Einmessung
-  currentMasterState = MASTER_STATE_BAUD_RATE_TESTING; [cite: 1]
-  currentBaudRateIdx = 0;
-  Serial.print("Starting Baud Rate Test at: ");
-  Serial.println(BAUD_RATES[currentBaudRateIdx]);
-  rs485Stack._setBaudRate(BAUD_RATES[currentBaudRateIdx]);
-  baudRateTestStartTime = millis();
+    lastHeartbeatMillis = millis();
+    lastBaudRateMeasurementMillis = millis();
+    lastRekeyingMillis = millis();
+    Serial.println("Scheduler: Initialisierung abgeschlossen.");
 }
 
 void loop() {
-  rs485Stack.processIncoming(); // Pakete empfangen und verarbeiten
-  manageDERE(false); // Ensure we are in receive mode by default
+    rs485Stack.loop(); // Empfängt Pakete
 
-  keyManager.update(); // NEU: Regelmäßiges Update für den Schlüsselmanager
-                       // Dies prüft, ob eine Schlüsselrotation notwendig ist.
+    switch (currentSchedulerState) {
+        case STATE_INIT_BUS:
+            manageBaudRateMeasurement();
+            break;
 
-  switch (currentMasterState) {
-    case MASTER_STATE_INITIALIZING:
-      // Should transition to BAUD_RATE_TESTING in setup
-      break;
-    case MASTER_STATE_BAUD_RATE_TESTING:
-      if (millis() - baudRateTestStartTime > BAUD_RATE_TEST_DURATION_MS) {
-        // Evaluate current baud rate
-        Serial.print("Finished test for ");
-        Serial.print(BAUD_RATES[currentBaudRateIdx]); Serial.println(" bps.");
-        int totalAcks = 0;
-        for (auto const& [addr, node] : connectedNodes) {
-          totalAcks += node.ackCount;
-        }
-
-        Serial.print("Total ACKs received for this test: "); Serial.println(totalAcks);
-        if (totalAcks >= MIN_TEST_ACKS) { // We got enough ACKs to consider this baud rate stable
-          bestBaudRate = BAUD_RATES[currentBaudRateIdx];
-          Serial.print("Found stable baud rate: "); Serial.println(bestBaudRate);
-          currentMasterState = MASTER_STATE_OPERATIONAL;
-          activeBaudRate = bestBaudRate;
-          // rs485Stack.setCurrentKeyId(currentSessionKeyId); // Dies wird nun vom KeyRotationManager gehandhabt
-          // Inform all nodes about the final baud rate
-          for (auto const& [addr, node] : connectedNodes) {
-            manageDERE(true); // Set to transmit for sending
-            rs485Stack.sendMessage(addr, RS485SecureStack::MSG_TYPE_BAUD_RATE_SET, String(bestBaudRate));
-            delay(10); // Small delay to allow bus to settle
-            manageDERE(false); // Back to receive
-          }
-          Serial.println("Transitioning to OPERATIONAL state.");
-          // lastRekeyTime = millis(); // Nicht mehr benötigt, wird vom KeyRotationManager verwaltet
-          lastHeartbeatTime = millis(); // Start heartbeat timer
-          break; // Exit baud rate testing
-        }
-        // Reset ACK counts for next test
-        for (auto& pair : connectedNodes) {
-          pair.second.ackCount = 0;
-          pair.second.nackCount = 0;
-        }
-        // Try next baud rate
-        currentBaudRateIdx++;
-        if (currentBaudRateIdx < NUM_BAUD_RATES) {
-          Serial.print("Trying next baud rate: ");
-          Serial.println(BAUD_RATES[currentBaudRateIdx]);
-          rs485Stack._setBaudRate(BAUD_RATES[currentBaudRateIdx]);
-          baudRateTestStartTime = millis();
-          // Send some dummy packets to provoke ACKs
-          for (auto const& [addr, node] : connectedNodes) {
-            if (node.isSubmaster) { // Only test Submasters, clients might not respond directly
-              manageDERE(true);
-              rs485Stack.sendMessage(addr, RS485SecureStack::MSG_TYPE_DATA, "TEST_BAUD");
-              delay(10); // Small delay
-              manageDERE(false);
+        case STATE_NORMAL_OPERATION:
+            if (millis() - lastHeartbeatMillis > MASTER_HEARTBEAT_INTERVAL_MS) {
+                sendHeartbeat();
+                lastHeartbeatMillis = millis();
             }
-          }
-        } else {
-          Serial.println("No stable baud rate found. Sticking with best found or default.");
-          activeBaudRate = bestBaudRate; // Default to the best one found so far (could be 9600)
-          currentMasterState = MASTER_STATE_OPERATIONAL; // Force transition to operational
-          // lastRekeyTime = millis(); // Nicht mehr benötigt
-          lastHeartbeatTime = millis();
-        }
-      }
-      break;
+            if (millis() - lastBaudRateMeasurementMillis > BAUD_RATE_MEASUREMENT_INTERVAL_MS) {
+                currentSchedulerState = STATE_INIT_BUS; // Erneut Baudrate einmessen
+                Serial.println("Scheduler: Starte erneute Baudraten-Einmessung.");
+                lastBaudRateMeasurementMillis = millis();
+            }
+            if (millis() - lastRekeyingMillis > REKEYING_INTERVAL_MS) {
+                currentSchedulerState = STATE_REKEYING;
+                Serial.println("Scheduler: Starte Rekeying-Prozess.");
+                rekeyingStartTime = millis();
+                rekeyingAckCount = 0;
+                generateAndSendNewKey();
+                lastRekeyingMillis = millis(); // Reset für nächsten Rekeying-Intervall
+            }
+            checkNodeTimeouts();
+            // Beispiel: Erlaube Submaster 1 alle 10 Sekunden zu senden
+            // if (millis() % 10000 < 100 && !connectedNodes[1].permissionToSend) {
+            //     sendPermissionToSubmaster(1);
+            // }
+            break;
 
-    case MASTER_STATE_OPERATIONAL:
-      // Master Heartbeat senden
-      if (millis() - lastHeartbeatTime > HEARTBEAT_INTERVAL_MS) {
-        manageDERE(true);
-        rs485Stack.sendMessage(RS485SecureStack::BROADCAST_ADDRESS, RS485SecureStack::MSG_TYPE_MASTER_HEARTBEAT, "");
-        manageDERE(false);
-        lastHeartbeatTime = millis();
-      }
+        case STATE_REKEYING:
+            manageRekeying();
+            break;
 
-      // Token Passing (Submaster-Management)
-      if (!submasterQueue.empty() && millis() - connectedNodes[submasterQueue[currentSubmasterIdx]].lastContactTime > 500) { // Give token to next submaster after a delay or upon confirmation
-        byte nextSubmaster = submasterQueue[currentSubmasterIdx];
-        manageDERE(true);
-        rs485Stack.sendMessage(nextSubmaster, RS485SecureStack::MSG_TYPE_PERMISSION_TO_SEND, "");
-        manageDERE(false);
-        Serial.print("Master: Giving permission to send to Submaster: ");
-        Serial.println(nextSubmaster);
-        connectedNodes[nextSubmaster].lastContactTime = millis(); // Update last contact to prevent immediate re-permission
-        currentSubmasterIdx = (currentSubmasterIdx + 1) % submasterQueue.size();
-      }
+        case STATE_ROGUEMASTER_DETECTED:
+            Serial.println("!!!! ROGUE MASTER DETECTED - ENTERING SAFE MODE !!!!");
+            // Hier sollten weitere Maßnahmen ergriffen werden, z.B. Alarme auslösen,
+            // alle aktiven Operationen einstellen, Bus in den Halted-Zustand versetzen.
+            // Der Scheduler wird keine weiteren Nachrichten senden, solange dieser Zustand anhält.
+            delay(1000); // Zur Beruhigung der Ausgabe
+            break;
 
-      // Rogue Master Detection
-      if (rogueMasterAddress != 0 && millis() - lastRogueHeartbeatTime < ROUGE_MASTER_TIMEOUT_MS) {
-          Serial.print("!!! MASTER: Rogue Master detected at address: ");
-          Serial.println(rogueMasterAddress);
-          currentMasterState = MASTER_STATE_ROUGE_MASTER_DETECTED;
-      }
-      break;
-
-    case MASTER_STATE_ROUGE_MASTER_DETECTED:
-      Serial.println("!!! WARNING: ROGUE MASTER DETECTED! HALTING TRANSMISSIONS. !!!");
-      delay(100); // Wait in safe state
-      break;
-  }
-}
-
-// Callback-Funktion, wird von RS485SecureStack aufgerufen
-void onPacketReceived(byte senderAddr, char msgType, const String& payload) {
-  // --- Baudraten-Antworten verarbeiten (für Baudraten-Einmessung) ---
-  if (currentMasterState == MASTER_STATE_BAUD_RATE_TESTING && msgType == RS485SecureStack::MSG_TYPE_ACK) {
-    if (connectedNodes.count(senderAddr)) {
-      connectedNodes[senderAddr].ackCount++;
-      Serial.print("ACK from "); Serial.println(senderAddr);
+        case STATE_ERROR:
+            Serial.println("!!!! SCHEDULER IN ERROR STATE - REBOOT REQUIRED !!!!");
+            delay(1000); // Zur Beruhigung der Ausgabe
+            // In einer echten Anwendung würde hier ein Watchdog-Reset ausgelöst oder
+            // eine komplexere Fehlerbehandlung erfolgen.
+            break;
     }
-  }
-
-  // --- Heartbeat-Antworten verarbeiten (von Submastern) ---
-  if (msgType == RS485SecureStack::MSG_TYPE_HEARTBEAT) {
-      if (connectedNodes.count(senderAddr)) {
-          connectedNodes[senderAddr].lastContactTime = millis();
-          // Serial.print("Heartbeat from: "); Serial.println(senderAddr);
-      }
-  }
-
-  // --- Rogue Master Detection (wenn Master einen fremden Heartbeat empfängt) ---
-  if (msgType == RS485SecureStack::MSG_TYPE_MASTER_HEARTBEAT) {
-      if (senderAddr != MY_ADDRESS) { // Nicht mein eigener Heartbeat
-          if (rogueMasterAddress == 0 || rogueMasterAddress == senderAddr) {
-              rogueMasterAddress = senderAddr;
-              lastRogueHeartbeatTime = millis();
-              Serial.print("Master: Heard Master Heartbeat from unexpected address: ");
-              Serial.println(senderAddr);
-          }
-      }
-  }
-  
-  // --- Bestätigung nach Senden vom Submaster ---
-  if (msgType == RS485SecureStack::MSG_TYPE_DATA && payload == "DONE_SENDING") {
-      Serial.print("Master: Received DONE_SENDING from Submaster ");
-      Serial.println(senderAddr);
-      // Hier könnte man den Token weitergeben oder den Submaster-Index aktualisieren
-  }
-
-  // Debug-Ausgabe für alle empfangenen Pakete
-  Serial.print("Received from ");
-  Serial.print(senderAddr);
-  Serial.print(", Type: ");
-  Serial.print(msgType);
-  Serial.print(", Payload: '");
-  Serial.print(payload);
-  Serial.println("'");
 }
 
-// Funktion zum Steuern des DE/RE Pins
-void manageDERE(bool transmit) {
-  if (transmit) {
-    digitalWrite(RS485_DE_RE_PIN, HIGH); // Senden aktivieren
-  } else {
-    digitalWrite(RS458_DE_RE_PIN, LOW); // Empfangen aktivieren
-  }
+// ==============================================================================
+// Callback-Funktion für den RS485SecureStack
+// ==============================================================================
+void onPacketReceived(RS485SecureStack::Packet_t packet) {
+    packetsReceived++;
+
+    // Prüfe auf HMAC und CRC Fehler
+    if (!packet.hmacVerified) {
+        hmacErrors++;
+        Serial.printf("ERR: Paket von %d hatte HMAC Fehler! Payload: '%s'\n", packet.senderAddress, packet.payload.c_str());
+        return; // Paket mit HMAC-Fehler ignorieren
+    }
+    if (!packet.crcVerified) {
+        crcErrors++;
+        Serial.printf("ERR: Paket von %d hatte CRC Fehler! Payload: '%s'\n", packet.senderAddress, packet.payload.c_str());
+        return; // Paket mit CRC-Fehler ignorieren
+    }
+
+    // Aktualisiere den Last-Seen-Status für den Absender
+    updateNodeStatus(packet.senderAddress);
+
+    // Spezialbehandlung für ACKs/NACKs
+    if (packet.isAck) {
+        Serial.printf("RCV ACK/NACK von %d: %s\n", packet.senderAddress, packet.payload.c_str());
+        if (packet.payload.startsWith("ACK")) {
+            // Je nach Kontext des wartenden ACK:
+            if (currentSchedulerState == STATE_INIT_BUS) {
+                // Bestätigung für Baudrate-Set
+                // Wir zählen ACKs und gehen erst weiter, wenn alle erwarteten Nodes geantwortet haben
+                baudRateSetAckReceived = true; // Setzt für den Master, dass er geantwortet hat
+                Serial.printf("ACK für Baudrate von Node %d erhalten.\n", packet.senderAddress);
+                // Hier müsste man tracken, welche Nodes geantwortet haben
+            } else if (currentSchedulerState == STATE_REKEYING && packet.messageType == MSG_TYPE_ACK_NACK) {
+                // Bestätigung für Key Update
+                rekeyingAckCount++;
+                Serial.printf("ACK für Rekeying von Node %d erhalten. Zähler: %lu/%lu\n", packet.senderAddress, rekeyingAckCount, connectedNodes.size());
+            }
+        } else if (packet.payload.startsWith("NACK")) {
+            Serial.printf("NACK von %d erhalten: %s\n", packet.senderAddress, packet.payload.c_str());
+            // Fehlerbehandlung für NACK
+            if (currentSchedulerState == STATE_REKEYING) {
+                Serial.printf("Rekeying fehlgeschlagen für Node %d: %s. Bleibe bei alter Key ID.\n", packet.senderAddress, packet.payload.c_str());
+                // Hier müsste man ggf. ein Rollback initiieren oder den Node isolieren
+                currentSchedulerState = STATE_NORMAL_OPERATION; // Abbruch des Rekeyings
+            }
+        }
+        return; // ACK/NACK wurde verarbeitet, keine weitere Behandlung
+    }
+
+    // Behandlung anderer Nachrichtentypen
+    switch (packet.messageType) {
+        case MSG_TYPE_MASTER_HEARTBEAT:
+            // Wenn ein anderer Master (nicht Adresse 0) einen Heartbeat sendet, ist das ein Rogue Master!
+            if (packet.senderAddress != MY_ADDRESS && packet.senderAddress != 255) { // 255 ist Broadcast
+                Serial.printf("!!!! Scheduler: ROGUE MASTER DETECTED from address %d !!!!\n", packet.senderAddress);
+                currentSchedulerState = STATE_ROGUEMASTER_DETECTED;
+            } else {
+                 if (packet.senderAddress == MY_ADDRESS) {
+                    Serial.printf("DBG: Eigener Heartbeat empfangen (Loopback).\n");
+                } else {
+                    Serial.printf("DBG: Master-Heartbeat (Broadcast) empfangen von %d.\n", packet.senderAddress);
+                }
+            }
+            break;
+
+        case MSG_TYPE_DATA:
+            Serial.printf("RCV DATA von %d: '%s'\n", packet.senderAddress, packet.payload.c_str());
+            // Beispiel: Wenn ein Submaster einen Status sendet
+            if (connectedNodes.count(packet.senderAddress) && packet.payload.startsWith("SUB_STATUS:")) {
+                Serial.printf("Submaster %d Status: %s\n", packet.senderAddress, packet.payload.c_str());
+                if (connectedNodes[packet.senderAddress].permissionToSend) {
+                    connectedNodes[packet.senderAddress].permissionToSend = false; // Permission verbraucht
+                }
+            }
+            // Beispiel: Client meldet Status
+            if (connectedNodes.count(packet.senderAddress) && packet.payload.startsWith("STATUS_OK")) {
+                 Serial.printf("Client %d Status: %s\n", packet.senderAddress, packet.payload.c_str());
+            }
+            break;
+        
+        case MSG_TYPE_BAUD_RATE_SET: // Scheduler empfängt keine Baudrate Set Nachrichten
+        case MSG_TYPE_KEY_UPDATE:    // Scheduler empfängt keine Key Update Nachrichten
+            Serial.printf("RCV Unerwarteter Nachrichtentyp '%c' von %d.\n", packet.messageType, packet.senderAddress);
+            break;
+    }
+}
+
+// ==============================================================================
+// Baudraten-Einmessung
+// ==============================================================================
+void manageBaudRateMeasurement() {
+    // Sende die aktuelle Test-Baudrate als Broadcast
+    if (millis() - lastBaudRateMeasurementMillis > 2000) { // Genug Zeit für Antworten
+        if (currentBaudRateIndex < NUM_BAUD_RATES) {
+            long testBaud = TEST_BAUD_RATES[currentBaudRateIndex];
+            Serial.printf("Scheduler: Teste Baudrate: %ld\n", testBaud);
+            rs485Stack.setBaudRate(testBaud); // Setze eigene Baudrate
+
+            StreamString payload;
+            payload.printf("%ld", testBaud);
+
+            // Sende die Baudrate als Broadcast. Erfordert ACK.
+            if (rs485Stack.sendMessage(255, MY_ADDRESS, MSG_TYPE_BAUD_RATE_SET, payload.c_str(), true)) {
+                // Erfolg bedeutet, dass das Senden und das Warten auf ACKs erfolgreich waren.
+                // ACHTUNG: sendMessage(..., true) wartet nur auf EIN ACK. Für alle Nodes müsste man eigene Logik implementieren.
+                // Für dieses PoC gehen wir davon aus, dass ein ACK für Broadcasts reicht oder wir prüfen die individuellen Nodes später.
+                Serial.printf("Scheduler: Baudrate %ld gesendet und ACK erhalten (mind. einer).\n", testBaud);
+                currentSchedulerState = STATE_NORMAL_OPERATION;
+                lastBaudRateMeasurementMillis = millis(); // Setze Zeit für nächste Einmessung
+                Serial.printf("Scheduler: Erfolgreich auf Baudrate %ld eingestellt. Normaler Betrieb.\n", testBaud);
+                return;
+            } else {
+                Serial.printf("Scheduler: Baudrate %ld konnte nicht gesetzt werden (kein ACK).\n", testBaud);
+                currentBaudRateIndex++; // Versuche nächste Baudrate
+            }
+        } else {
+            Serial.println("Scheduler: Alle Baudraten getestet, keine stabile Rate gefunden. Bleibe bei initialer Baudrate.");
+            currentBaudRateIndex = 0; // Reset für den nächsten Zyklus
+            currentSchedulerState = STATE_ERROR; // Kann keine Kommunikation aufbauen
+            // Optional: Hard-Reset oder Default-Baudrate erzwingen
+        }
+        lastBaudRateMeasurementMillis = millis(); // Wartezeit für nächsten Versuch
+    }
+}
+
+// ==============================================================================
+// Rekeying Management
+// ==============================================================================
+void generateAndSendNewKey() {
+    // Generiere eine neue Key ID (muss von 0-255 reichen, 0 ist Master Key)
+    nextKeyId++;
+    if (nextKeyId == 0) nextKeyId = 1; // 0 ist reserviert für Master Key oder initialen Schlüssel
+
+    // Generiere einen neuen, zufälligen Session Key (32 Bytes für SHA256)
+    uint8_t newSessionKey[32];
+    for (int i = 0; i < 32; ++i) {
+        newSessionKey[i] = random(256);
+    }
+    
+    // Setze den neuen Schlüssel im Scheduler selbst
+    rs485Stack.setSessionKey(nextKeyId, newSessionKey, sizeof(newSessionKey));
+    rs485Stack.setCurrentKeyId(nextKeyId); // Ab sofort diesen Schlüssel verwenden
+
+    // Bereite den Payload vor: JSON mit keyID und dem verschlüsselten SessionKey
+    // Der SessionKey muss mit dem MasterKey verschlüsselt werden, damit nur autorisierte Nodes ihn lesen können
+    AES256 aes256;
+    uint8_t encryptedSessionKey[32];
+    uint8_t iv[16];
+    
+    // IV für die Verschlüsselung des Session Keys
+    for (int i = 0; i < 16; ++i) iv[i] = random(256); // Zufälliges IV
+
+    // Master Key hashen (für AES-Key)
+    uint8_t masterKeyHash[32];
+    SHA256 sha256;
+    sha256.reset();
+    sha256.update(MASTER_KEY, strlen(MASTER_KEY));
+    sha256.finalize(masterKeyHash, sizeof(masterKeyHash));
+
+    aes256.setKey(masterKeyHash, aes256.keySize());
+    aes256.setIV(iv, aes256.ivSize());
+    memcpy(encryptedSessionKey, newSessionKey, 32); // Kopiere den Session Key in den Puffer
+    aes256.encryptCBC(encryptedSessionKey, 32); // Verschlüssele den Session Key
+
+    // Base64-Kodierung für den verschlüsselten Session Key
+    // Achtung: Crypto.h bietet keine Base64-Kodierung. Hier müsste eine manuelle Implementierung oder eine separate Bibliothek her.
+    // Für dieses PoC simulieren wir die Kodierung einfach
+    char base64EncryptedKey[65]; // 32 Bytes werden zu 44 Base64-Chars + Nullterminierung
+    // Beispielhaft (nicht real):
+    for(int i=0; i<32; ++i) sprintf(&base64EncryptedKey[i*2], "%02X", encryptedSessionKey[i]);
+    base64EncryptedKey[64] = '\0'; // Nullterminierung
+
+    StreamString payload;
+    payload.printf("{\"keyID\":%d,\"sessionKey\":\"%s\",\"iv\":\"", nextKeyId, base64EncryptedKey);
+    for(int i=0; i<16; ++i) payload.printf("%02X", iv[i]);
+    payload.printf("\"}");
+
+    Serial.printf("Scheduler: Sende neuen Key (ID %d) an alle Nodes...\n", nextKeyId);
+    // Sende den Key-Update als Broadcast. Erfordert ACK.
+    // Jeder Node muss mit ACK antworten
+    rs485Stack.sendMessage(255, MY_ADDRESS, MSG_TYPE_KEY_UPDATE, payload.c_str(), true);
+    // ACHTUNG: Die sendMessage Funktion wartet nur auf das ERSTE ACK.
+    // Für einen robusten Rekeying-Prozess müsste hier eine Logik mit individuellen ACKs
+    // von jeder erwarteten Node implementiert werden, um sicherzustellen, dass alle Nodes den Key erhalten haben.
+    // Für dieses PoC ist dies eine Vereinfachung.
+}
+
+void manageRekeying() {
+    // Im PoC wartet der Scheduler nicht auf alle ACKs, sondern geht davon aus,
+    // dass das erste ACK genügt, um das Rekeying als initiiert zu betrachten.
+    // Eine robustere Implementierung würde hier eine Schleife haben, die auf alle
+    // erwarteten ACKs wartet oder nach einer gewissen Zeit einen Timeout hat.
+    
+    // Nach dem Senden des Keys wird auf die ACKs gewartet. Wenn die Zeit abgelaufen ist
+    // oder genügend ACKs gesammelt wurden, wird in den Normalbetrieb zurückgekehrt.
+    if (millis() - rekeyingStartTime > 5000) { // 5 Sekunden für alle ACKs
+        if (rekeyingAckCount >= connectedNodes.size()) { // Alle haben geantwortet (Idealfall)
+            Serial.println("Scheduler: Rekeying erfolgreich abgeschlossen. Alle Nodes haben geantwortet.");
+            currentSchedulerState = STATE_NORMAL_OPERATION;
+        } else {
+            Serial.printf("Scheduler: Rekeying abgeschlossen, aber nicht alle Nodes (%lu/%lu) haben geantwortet.\n", rekeyingAckCount, connectedNodes.size());
+            Serial.println("Scheduler: Kehre zum Normalbetrieb zurück. Überprüfe Nodes manuell.");
+            currentSchedulerState = STATE_NORMAL_OPERATION;
+            // Hier könnte man versuchen, die fehlenden Nodes erneut zu rekeyen oder sie als offline zu markieren
+        }
+    }
+}
+
+
+// ==============================================================================
+// Hilfsfunktionen
+// ==============================================================================
+void sendHeartbeat() {
+    if (currentSchedulerState == STATE_ROGUEMASTER_DETECTED) {
+        Serial.println("Scheduler: KEIN Heartbeat gesendet - Rogue Master erkannt!");
+        return;
+    }
+    Serial.println("Scheduler: Sende Master Heartbeat.");
+    // Heartbeat als Broadcast senden, kein ACK erforderlich
+    // Die sendMessage-Methode des Stacks kümmert sich jetzt intern um die Flussrichtung
+    if (rs485Stack.sendMessage(255, MY_ADDRESS, MSG_TYPE_MASTER_HEARTBEAT, "H", false)) {
+        packetsSent++;
+        // Serial.println("Master Heartbeat gesendet.");
+    } else {
+        Serial.println("Fehler beim Senden des Master Heartbeats.");
+    }
+}
+
+void updateNodeStatus(uint8_t address) {
+    if (connectedNodes.count(address)) {
+        connectedNodes[address].lastSeenMillis = millis();
+        connectedNodes[address].isOnline = true;
+    }
+}
+
+void checkNodeTimeouts() {
+    for (auto const& [address, status] : connectedNodes) {
+        if (status.isOnline && millis() - status.lastSeenMillis > NODE_TIMEOUT_MS) {
+            connectedNodes[address].isOnline = false;
+            Serial.printf("Node %d ist offline gegangen (Timeout).\n", address);
+        }
+    }
+}
+
+void sendPermissionToSubmaster(uint8_t submasterAddress) {
+    if (currentSchedulerState == STATE_ROGUEMASTER_DETECTED) {
+        Serial.println("Scheduler: KEINE Sendeerlaubnis vergeben - Rogue Master erkannt!");
+        return;
+    }
+    if (connectedNodes.count(submasterAddress) && connectedNodes[submasterAddress].isOnline) {
+        Serial.printf("Scheduler: Sende Sendeerlaubnis an Submaster %d.\n", submasterAddress);
+        // Sendeerlaubnis als reguläre Daten-Nachricht, erfordert ACK
+        if (rs485Stack.sendMessage(submasterAddress, MY_ADDRESS, MSG_TYPE_DATA, "PERMISSION_TO_SEND", true)) {
+            connectedNodes[submasterAddress].permissionToSend = true;
+            packetsSent++;
+        } else {
+            Serial.printf("Fehler beim Senden der Sendeerlaubnis an Submaster %d.\n", submasterAddress);
+        }
+    } else {
+        Serial.printf("Submaster %d nicht gefunden oder offline.\n", submasterAddress);
+    }
 }
