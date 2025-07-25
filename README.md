@@ -152,7 +152,7 @@ Für jeden ESP32 (C3 und S3):
 Alle "A"-Pins der MAX485 Module werden miteinander verbunden, ebenso alle "B"-Pins.
 Der RS485-Bus sollte als eine durchgehende Linie (Daisy-Chain) und nicht als Stern-Topologie verdrahtet werden.
 
-### Betriebsszenarien der RS486SecureCom Applikation
+### Betriebsszenarien der RS485SecureCom Applikation
 
 Die `RS486SecureCom` Applikation demonstriert die Interaktion der verschiedenen Nodes in realen Betriebsszenarien, die auch die Sicherheits- und Safety-Funktionen des `RS485SecureStack` umfassen:
 
