@@ -1,3 +1,1 @@
-# EXAMPLES
-
-siehe poc/
+# RS485SecureCom
