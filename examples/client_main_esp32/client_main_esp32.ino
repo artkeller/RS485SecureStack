@@ -9,10 +9,10 @@
 
 // WICHTIG: Wählen Sie EINE der folgenden Zeilen, je nach Ihrem RS485-Modul:
 // Option 1: Für Module MIT einem DE/RE-Pin, der manuell gesteuert werden muss (z.B. einfache MAX485-Module)
-#include "ManualDE_REDirectionControl.h" 
+// #include "ManualDE_REDirectionControl.h" 
 
 // Option 2: Für Module OHNE externen DE/RE-Pin (mit automatischer Flussrichtung, z.B. bestimmte HW-159/HW-519)
-// #include "AutomaticDirectionControl.h" 
+#include "AutomaticDirectionControl.h" 
 
 // ==============================================================================
 // GLOBAL KONFIGURATION (Client-spezifisch)
@@ -53,12 +53,12 @@ HardwareSerial& rs485Serial = Serial1; // Beispiel: UART1 des ESP32
 
 // Option 1: Für Module MIT einem DE/RE-Pin, der manuell gesteuert werden muss
 //   Der GPIO-Pin muss an den DE/RE-Pin Ihres RS485-Moduls angeschlossen werden.
-const int RS485_DE_RE_PIN = 3; // ANPASSEN: Beispiel-GPIO für DE/RE Pin des ESP32
-ManualDE_REDirectionControl myDirectionControl(RS485_DE_RE_PIN);
+// const int RS485_DE_RE_PIN = 3; // ANPASSEN: Beispiel-GPIO für DE/RE Pin des ESP32
+// ManualDE_REDirectionControl myDirectionControl(RS485_DE_RE_PIN);
 
 // Option 2: Für Module OHNE externen DE/RE-Pin (mit automatischer Flussrichtung)
 //   Für diese Module sind KEINE zusätzlichen GPIOs für DE/RE notwendig.
-// AutomaticDirectionControl myDirectionControl;
+AutomaticDirectionControl myDirectionControl;
 
 // ==============================================================================
 // Globales Objekt für den Stack - ÜBERGABE DES DIRECTIONCONTROL-OBJEKTS
