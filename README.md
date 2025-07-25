@@ -84,7 +84,7 @@ Für den Betrieb des `RS485SecureStack` benötigen Sie:
     * Beispiel: `HardwareSerial& rs485Serial = Serial1;`
 * **Für den Bus-Monitor:** Zusätzlich ein TFT-Display, z.B. das ST7789, wie es auf dem LilyGo T-Display S3 zu finden ist.
 
-## 🧪 Anwendungsbeispiel: RS486SecureCom Applikation
+## 🧪 Anwendungsbeispiel: RS485SecureCom Applikation
 
 Im `examples/` Verzeichnis dieses Projekts finden Sie die Applikation `RS486SecureCom`. Diese demonstriert die Nutzung der `RS485SecureStack`-Bibliothek in einer realen Welt, verteilten Umgebung. Die Applikation besteht aus vier verschiedenen Sketchen, die auf verschiedenen Node-Typen (Scheduler, Submaster, Clients und Bus-Monitor) ausgeführt werden und gemeinsam ein sicheres und intelligent verwaltetes RS485-Netzwerk bilden.
 
