@@ -66,7 +66,7 @@ Die `RS485SecureCom`-Applikation besteht aus den folgenden Kern-Sketches, die je
 * **Wichtige Code-Details:**
     * Verwendet eine `std::map` (`connectedNodes`) zur Verwaltung des Zustands der verbundenen Clients und Submaster.
     * Die `onPacketReceived` Callback-Funktion ist kritisch für die Verarbeitung von ACKs/NACKs, Master-Heartbeats (für Kollisionserkennung), Baudraten-Set-Bestätigungen und Key-Update-Anfragen.
-    * Die `manageDERE` Funktion steuert den DE/RE-Pin des RS485-Transceivers für das Senden.
+    * Die Flussrichtungssteuerung (DE/RE-Pin) wird nun vollständig von der `RS485SecureStack`-Bibliothek übernommen, nachdem die entsprechende `RS485DirectionControl`-Implementierung beim Initialisieren des Stacks konfiguriert wurde (siehe "Verdrahtungshinweise").
 
 ### 2. `submaster_main_esp32.ino` (Submaster-Node)
 
@@ -80,7 +80,7 @@ Die `RS485SecureCom`-Applikation besteht aus den folgenden Kern-Sketches, die je
 * **Wichtige Code-Details:**
     * Implementiert einen State Machine (`SubmasterState`) zur Verwaltung des Kommunikationsflusses (Warten auf Master, Warten auf Erlaubnis, Senden von Daten, Idle).
     * Die `onPacketReceived` Funktion verarbeitet Heartbeats, Baudraten- und Key-Updates vom Master sowie Antworten von Clients.
-    * Verwendet `rs485Stack.sendMessage()` zum Senden von Daten an Clients und Status an den Master.
+    * Verwendet `rs485Stack.sendMessage()` zum Senden von Daten an Clients und Status an den Master. Die Flussrichtungssteuerung erfolgt automatisch durch die Bibliothek.
 
 ### 3. `client_main_esp32.ino` (Client-Node)
 
@@ -92,7 +92,7 @@ Die `RS485SecureCom`-Applikation besteht aus den folgenden Kern-Sketches, die je
     * **Baudraten- und Key-Update-Verarbeitung:** Passt seine Baudrate und Session Key ID an, wenn er eine entsprechende Nachricht vom Master erhält.
 * **Wichtige Code-Details:**
     * Einfachere State Machine (`ClientState`) als der Submaster (Warten auf Master, Idle).
-    * Die `onPacketReceived` Funktion ist hauptsächlich auf das Parsen von Datenanfragen und das Senden von Antworten ausgelegt.
+    * Die `onPacketReceived` Funktion ist hauptsächlich auf das Parsen von Datenanfragen und das Senden von Antworten ausgelegt. Die Flussrichtungssteuerung erfolgt automatisch durch die Bibliothek.
 
 ### 4. `bus_monitor_esp32.ino` (Bus-Monitor-Node)
 
@@ -151,8 +151,7 @@ Der Inhalt des `Encrypted Payload` hängt stark vom `MessageType` ab. Die Payloa
         ```
         Der `sessionKey` ist hierbei vom Master mit dem `MASTER_KEY` verschlüsselt, bevor er in den Payload gepackt wird.
     * **Verantwortlichkeit:** Nur der Scheduler sendet dies. Empfangende Nodes entschlüsseln den Session Key mit ihrem `MASTER_KEY`, speichern ihn unter der neuen `keyID` und verwenden ihn fortan für die Kommunikation. Eine ACK-Nachricht ist erforderlich.
-
-      **⚠️ Disclaimer:** Die aktuelle Alphaversion der Implementierung der `RS485SecureStack`-Bibliothek darf nur im PoC eingesetzt werden. In einer Folgebversion wird das Update des `sessionKey` mittels Diffie-Hellman (DH) für den Produktionseinsatz abgesichert.
+    * **WICHTIGER HINWEIS:** Die Sicherheit des Session Keys hängt maßgeblich vom Schutz des `MASTER_KEY` ab. Sollte der `MASTER_KEY` kompromittiert werden, könnte ein Angreifer Session Keys entschlüsseln und sich unbemerkt in das Netzwerk einschleichen oder manipulierte Nachrichten senden. In Produktionsumgebungen ist daher ein **sicheres Provisioning und der Schutz des `MASTER_KEY` unerlässlich** (z.B. durch Secure Element Hardware oder sichere Schlüsselinjektionsverfahren), was über den Rahmen dieses PoC hinausgeht.
 
 4.  **`MSG_TYPE_DATA` (`'D'`):**
     * **Payload-Inhalt:** Variabel, je nach Anwendungsfall. Kann einfache Statusanfragen, Befehle oder übertragene Sensordaten sein.
@@ -205,27 +204,26 @@ Für den Aufbau der vollständigen `RS485SecureCom`-Applikation benötigen Sie f
 
 Die `RS485SecureCom`-Applikation nutzt den **Halbduplex-Betrieb** des RS485-Busses. Dies bedeutet, dass ein Transceiver zu einem Zeitpunkt entweder senden *oder* empfangen kann, aber nicht beides gleichzeitig.
 
-Je nach Variante Ihres RS485-Transceiver-Moduls (z.B. HW-159 oder ähnliche MAX485-basierte Module) gibt es zwei gängige Methoden, wie die Flussrichtung gesteuert wird:
+Die Flussrichtungssteuerung (d.h., das Umschalten des RS485-Moduls zwischen Sende- und Empfangsmodus) wird nun vollständig von der `RS485SecureStack`-Bibliothek über eine dedizierte Hardware-Abstraktionsschicht gehandhabt. Der App-Entwickler muss sich um die Timing-Details nicht mehr kümmern; es ist eine **"Set-and-Forget"-Lösung**.
+
+Je nach Variante Ihres RS485-Transceiver-Moduls (z.B. HW-159 oder ähnliche MAX485-basierte Module) gibt es zwei gängige Methoden, wie die Flussrichtung gesteuert wird. Die Bibliothek unterstützt beide durch eine einfache Konfiguration im Sketch:
 
 1.  **Manuelle Steuerung mittels eines DE/RE-Pins (häufig bei einfachen Modulen):**
     * Viele RS485-Module, die auf dem MAX485-Chip basieren, führen dessen DE (Driver Enable) und RE (Receiver Enable) Pins als einen einzigen Pin (oft gebrückt) nach außen.
-    * **Diese Module erfordern eine externe Steuerung durch den Mikrocontroller.** Ein GPIO-Pin des ESP32 muss diesen DE/RE-Pin aktiv auf `HIGH` setzen, bevor Daten gesendet werden, und auf `LOW` setzen, nachdem die Datenübertragung abgeschlossen ist, um in den Empfangsmodus zu wechseln.
-    * Die Beispiel-Sketches in diesem Projekt (z.B. `scheduler_main_esp32.ino`) sind für diesen Fall ausgelegt und verwenden die `manageDERE(true/false)`-Funktion, um diese Steuerung zu demonstrieren.
+    * Diese Module erfordern die Ansteuerung dieses Pins durch einen GPIO des Mikrocontrollers.
+    * **Verdrahtung:** Der DE/RE-Pin des RS485-Moduls wird mit einem beliebigen freien GPIO-Pin des ESP32 verbunden (z.B. GPIO 3).
 
 2.  **Automatische Flussrichtungssteuerung (bei Modulen mit integrierter Logik):**
     * Einige RS485-Module (wie von Ihnen beschrieben für Ihr spezifisches HW-159 Modul oder ähnlich dem HW-519) verfügen über **zusätzliche Hardware-Logik auf der Platine**, die die DE/RE-Pins des MAX485-Chips intern steuert.
-    * Diese Module überwachen das TX-Signal des Mikrocontrollers. Sobald der Mikrocontroller Daten über seine TX-Leitung sendet, erkennt die Modul-Hardware dies und schaltet den MAX485 automatisch in den Sendezustand. Wenn die TX-Leitung inaktiv ist, schaltet das Modul automatisch in den Empfangsmodus zurück.
-    * **Für solche Module ist KEIN separater GPIO-Pin vom Mikrocontroller für die DE/RE-Steuerung erforderlich.** Das Modul wird dann typischerweise nur über GND, VCC, RX (vom Modul zum MCU) und TX (vom MCU zum Modul) mit dem Mikrocontroller verbunden, zusätzlich zu den RS485-Bus-Leitungen A und B.
-    * Wenn Ihr HW-159 Modul dieser Beschreibung entspricht (nur 4 Pins für die TTL-Seite: VCC, GND, RX, TX), dann ist die `manageDERE()`-Funktion in den Beispiel-Sketches **nicht notwendig** und sollte deaktiviert oder entfernt werden, da die Hardware diese Funktion bereits übernimmt.
+    * Diese Module erkennen selbstständig anhand der Aktivität auf der TX-Leitung des Mikrocontrollers, wann gesendet werden soll.
+    * **Verdrahtung:** Für diese Module ist KEIN separater GPIO-Pin vom Mikrocontroller für die DE/RE-Steuerung erforderlich. Das Modul wird dann typischerweise nur über GND, VCC, RX (vom Modul zum MCU) und TX (vom MCU zum Modul) mit dem Mikrocontroller verbunden, zusätzlich zu den RS485-Bus-Leitungen A und B.
 
-**Unabhängig von der Steuerungsmethode sollten die grundlegenden Verbindungen wie folgt hergestellt werden:**
+**Die grundlegenden Verbindungen (unabhängig von der Flussrichtungssteuerung) sind immer wie folgt herzustellen:**
 
 * **ESP32 TX** an **MAX485 DI** (Driver Input)
 * **ESP32 RX** an **MAX485 RO** (Receiver Output)
-* **[Optional, nur für Module ohne automatische Steuerung] ESP32 GPIO (DE/RE)** an **MAX485 DE & RE** (Driver Enable & Receiver Enable, oft gebrückt auf dem Modul)
-    * Dieser GPIO-Pin muss im Sketch entsprechend gesetzt werden: `HIGH` für den Sendezustand und `LOW` für den Empfangszustand.
-    * Für reine Lauschtests (z.B. mit dem Bus-Monitor) kann der Pin fest auf `LOW` belassen werden, da in diesem Fall keine Sendeoperationen durchgeführt werden. Für Nodes, die aktiv am Bus senden, ist die korrekte und zeitgerechte Steuerung dieses Pins jedoch unerlässlich!
-* **MAX485 VCC** an **ESP32 3.3V**
+* **[Nur für Module mit manuellem DE/RE-Pin] ESP32 GPIO (DE/RE)** an **MAX485 DE & RE** (Driver Enable & Receiver Enable, oft gebrückt auf dem Modul)
+* **MAX485 VCC** an **ESP32 3.3V** (oder 5V, je nach Modul-Spezifikation und ESP32-Kompatibilität)
 * **MAX485 GND** an **ESP32 GND**
 * **MAX485 A** an **RS485 Bus A**
 * **MAX485 B** an **RS485 Bus B**
@@ -238,7 +236,7 @@ Für detailliertere Informationen zur RS485-Verkabelung, Buseigenschaften und em
 * [Renesas, White Paper: Schnittstellen für Industrie-PCs vereinfachen](https://www.renesas.com/en/document/whp/schnittstellen-f-r-industrie-pcs-vereinfachen#:~:text=RS%2D485%20unterst%C3%BCtzt%20Leitungsl%C3%A4ngen%20bis,in%20Bild%204%20dargestellt%20ist.)
 * [Renesas, Application Note, RS-485 Design Guide](https://www.renesas.com/en/document/apn/rs-485-design-guide-application-note#:~:text=Suggested%20Network%20Topology,-RS%2D485%20is&text=RS%2D485%20supports%20several%20topologies,each%20with%20a%20unique%20address.)
 
-
+---
 
 ## 🚀 Erste Schritte
 
@@ -259,8 +257,26 @@ Für jeden Sketch, den Sie verwenden möchten:
 
 1.  **Öffnen Sie den Sketch:** Navigieren Sie zu diesem `examples/` Verzeichnis und öffnen Sie den gewünschten `*.ino`-Sketch in der Arduino IDE.
 2.  **`credantials.h`:** Stellen Sie sicher, dass der `MASTER_KEY` in `credantials.h` (im Projekt-Root) für alle Geräte, die am selben Bus kommunizieren sollen, **identisch** ist.
-3.  **UART und DE/RE Pin:**
-    * Die Beispiel-Sketches verwenden standardmäßig `Serial1` für RS485-Kommunikation. Passen Sie `HardwareSerial& rs485Serial = Serial1;` und die GPIO-Pins für RX/TX sowie den `RS485_DE_RE_PIN` (`const int RS485_DE_RE_PIN = 3;`) an die tatsächlichen Anschlüsse Ihrer Hardware an.
+3.  **UART und Flussrichtungssteuerung ("Set-and-Forget"):**
+    * Die Beispiel-Sketches verwenden standardmäßig `Serial1` für RS485-Kommunikation. Passen Sie `HardwareSerial& rs485Serial = Serial1;` und die GPIO-Pins für RX/TX an die tatsächlichen Anschlüsse Ihrer Hardware an (normalerweise werden diese für die UART in der `begin()`-Methode der `HardwareSerial` festgelegt oder sind fest verdrahtet).
+    * **Die Flussrichtungssteuerung ist nun eine "Set-and-Forget"-Konfiguration:**
+        * Fügen Sie am Anfang des Sketches die entsprechende Header-Datei für Ihre Hardware-Variante ein:
+            * Für Module **mit** einem manuell zu steuernden DE/RE-Pin: `#include "ManualDE_REDirectionControl.h"`
+            * Für Module **mit** automatischer Flussrichtungssteuerung: `#include "AutomaticDirectionControl.h"`
+        * Erstellen Sie eine globale Instanz Ihrer `RS485DirectionControl`-Klasse **vor** der Instanziierung des `RS485SecureStack`-Objekts.
+            * **Beispiel für manuellen DE/RE-Pin:**
+                ```cpp
+                const int RS485_DE_RE_PIN = 3; // GPIO für DE/RE Pin, ANPASSEN!
+                ManualDE_REDirectionControl myDirectionControl(RS485_DE_RE_PIN);
+                ```
+            * **Beispiel für automatische Flussrichtungssteuerung:**
+                ```cpp
+                AutomaticDirectionControl myDirectionControl;
+                ```
+        * Übergeben Sie diese Instanz im Konstruktor des `RS485SecureStack`-Objekts:
+            ```cpp
+            RS485SecureStack rs485Stack(&myDirectionControl);
+            ```
     * **Hinweis zu `Serial` (UART0):** `Serial` wird oft für die USB-Debugausgabe verwendet. Eine separate UART (wie `Serial1` oder `Serial2`) ist für stabile RS485-Kommunikation dringend empfohlen, um Konflikte zu vermeiden.
 4.  **Eindeutige Adressen:** Stellen Sie sicher, dass `MY_ADDRESS` in jedem Sketch für jeden physischen Node **eindeutig** ist (z.B. Scheduler=0, Submaster1=1, Submaster2=2, Client1=11, Client2=12, Monitor=254).
 5.  **TFT-Pins (nur für `bus_monitor_esp32.ino`):** Überprüfen Sie die `#define`s für `TFT_CS`, `TFT_DC`, `TFT_RST`, `TFT_MOSI`, `TFT_SCLK`, `TFT_MISO` in `bus_monitor_esp32.ino` und passen Sie diese an die spezifische Pinbelegung Ihres LilyGo T-Display S3 an.
@@ -270,9 +286,9 @@ Für jeden Sketch, den Sie verwenden möchten:
 1.  **Flashen:**
     * Wählen Sie in der Arduino IDE das korrekte Board und den COM-Port für das jeweilige ESP32-Board aus (`Werkzeuge > Board`, `Werkzeuge > Port`).
     * Laden Sie die vorbereiteten Sketches auf jedes Board entsprechend seiner Rolle (`scheduler_main_esp32.ino`, `submaster_main_esp32.ino`, `client_main_esp32.ino`, `bus_monitor_esp32.ino`).
-2.  **Inbetriebnahme-Reihenfolge:**
-    * Starten Sie zuerst den **Scheduler (Master)**. Er beginnt mit der Bus-Initialisierung und Baudraten-Einmessung.
-    * Schalten Sie anschließend die **Submaster** und **Clients** ein. Sie sollten die Baudraten-Anweisungen des Masters empfangen und sich anpassen.
+2.  **Inbetriebnahme:**
+    * Starten Sie zuerst den **Scheduler (Master)**. Er wird beginnen, den Bus zu initialisieren und die Baudrate einzumessen.
+    * Schalten Sie dann die **Submaster** und **Clients** ein. Sie sollten die Baudraten-Anweisungen des Masters empfangen und sich anpassen.
     * Zum Schluss schalten Sie den **Bus-Monitor** ein. Er sollte automatisch die Baudrate des Busses erkennen und beginnen, den Verkehr anzuzeigen.
 
 ## 🏃 Betriebsszenarien der `RS485SecureCom` Applikation
@@ -317,6 +333,14 @@ Die Applikation ist darauf ausgelegt, verschiedene Betriebsszenarien zu demonstr
     * Der **Bus-Monitor** (im Debug-Modus) kann die empfangenen Pakete protokollieren, aber mit dem expliziten Hinweis "HMAC_OK: NO", was die erfolgreiche Abwehr der Manipulation demonstriert und die Datenintegrität des Systems gewährleistet.
 
 Diese Szenarien verdeutlichen die umfassenden Fähigkeiten der `RS485SecureCom`-Applikation, ein sicheres, zuverlässiges und intelligent verwaltetes RS485-Netzwerk zu betreiben.
+
+## ⚠️ Disclaimer für Anwendungsbeispiele
+
+Diese Beispiele sind **ausschließlich für Proof-of-Concepts (PoCs)**, Evaluierungen und Entwicklungszwecke in kontrollierten Umgebungen gedacht. Sie dienen der Demonstration der Machbarkeit und der Sicherheitskonzepte des `RS485SecureStack`.
+
+**Diese Software ist NICHT für den Produktionseinsatz geeignet.** Für den Einsatz in einer Produktionsumgebung ist das **sichere Provisioning und der Schutz des Master Authentication Key (MAK)** von entscheidender Bedeutung. Derzeit ist der MAK im Quellcode hinterlegt. Implementierungen für Secure-Boot, Flash-Verschlüsselung und Hardware-Security-Module, die für einen produktiven Einsatz notwendig wären, sind in diesen Beispielen nicht enthalten.
+
+Die Autoren übernehmen keine Haftung für Schäden oder Verluste, die durch die Verwendung dieser Software entstehen. Die Nutzung erfolgt auf eigenes Risiko.
 
 ## ⚠️ Disclaimer für Anwendungsbeispiele
 
