@@ -1,612 +1,673 @@
 #include "RS485SecureStack.h"
-#include "KeyRotationManager.h" // NEU: KeyRotationManager inkludieren
-#include <HardwareSerial.h> // Wird für HardwareSerial::begin() etc. benötigt
-#include <Crypto.h>         // Basis Crypto API für ESP32
-#include <AES.h>            // Spezifische AES Implementierung für ESP32
-#include <HMAC.h>           // Spezifische HMAC Implementierung für ESP32
-#include <SHA256.h>         // Spezifische SHA256 Implementierung für ESP32 (auch für Key Derivation)
 
-// Hinweis: Globale Instanzen von Crypto-Objekten wie im alten Code sind entfernt,
-// da sie jetzt als Member der Klasse RS485SecureStack deklariert sind.
-// Beispiel: `AES128 _aes;` ist bereits in der Klasse definiert.
+// Konstante für das Escape-Byte im Byte-Stuffing
+const uint8_t RS485_ESCAPE_BYTE = 0x7D; // Beispielwert, kann angepasst werden
 
-// Konstruktor-Implementierung
-// Initialisierungsliste initialisiert alle Member-Variablen direkt
-// und synchronisiert Namen und Typen mit RS485SecureStack.h
-RS485SecureStack::RS485SecureStack(HardwareSerial& serial, byte localAddress, const byte masterKey[HMAC_KEY_SIZE])
-    : _rs485Serial(serial),          // Initialisiert die HardwareSerial Referenz
-      _localAddress(localAddress),   // Initialisiert die lokale Adresse
-      _receiveBufferIdx(0),          // Index für den Empfangspuffer
-      _receivingPacket(false),       // Flag, ob gerade ein Paket empfangen wird
-      _escapeNextByte(false),        // Flag, ob das nächste Byte escaped ist
-      _receiveCallback(nullptr),     // Callback-Funktion ist initial nullptr
-      _ackEnabled(true),             // ACKs standardmäßig aktiviert
-      _currentSessionKeyId(0),       // Aktuelle Session Key ID (initial 0)
-      _hmacVerified(false),          // HMAC initial nicht verifiziert
-      _checksumVerified(false),      // Checksumme initial nicht verifiziert (falls implementiert)
-      _currentPacketSource(0),       // Source der letzten Nachricht
-      _currentPacketTarget(0),       // Target der letzten Nachricht
-      _currentPacketMsgType(0),      // Typ der letzten Nachricht
-      _deRePin(-1),                   // DE/RE Pin initial auf -1 (nicht gesetzt)
-      _keyRotationManager(nullptr) // NEU: Initialisiere den Manager-Zeiger auf nullptr
-{
-    // Kopiere den Pre-Shared Master Authentication Key in das private Member-Array
-    memcpy(_masterKey, masterKey, HMAC_KEY_SIZE);
+// CRC16 Tabelle (CCITT, Xmodem, Kermit, etc. können variieren)
+// Hier: CRC-16-IBM (oder CRC-16-CCITT mit initial 0x0000, polynomial 0x8005)
+static const uint16_t crc16_table[256] = {
+    0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241,
+    0xC601, 0x06C0, 0x0780, 0xC741, 0x0500, 0xC5C1, 0xC481, 0x0440,
+    0xCC01, 0x0CC0, 0x0D80, 0xCD41, 0x0F00, 0xCFC1, 0xCE81, 0x0E40,
+    0x0A00, 0xCAC1, 0xCB81, 0x0B40, 0xC901, 0x09C0, 0x0880, 0xC841,
+    0xD801, 0x18C0, 0x1980, 0xD941, 0x1B00, 0xDBC1, 0xDA81, 0x1A40,
+    0x1E00, 0xDEC1, 0xDF81, 0x1F40, 0xDD01, 0x1DC0, 0x1C80, 0xDC41,
+    0x1400, 0xD4C1, 0xD581, 0x1540, 0xD701, 0x17C0, 0x1680, 0xD641,
+    0xD201, 0x12C0, 0x1380, 0xD341, 0x1100, 0xD1C1, 0xD081, 0x1040,
+    0xF001, 0x30C0, 0x3180, 0xF141, 0x3300, 0xF3C1, 0xF281, 0x3240,
+    0x3600, 0xF6C1, 0xF781, 0x3740, 0xF501, 0x35C0, 0x3480, 0xF441,
+    0x3C00, 0xFCC1, 0xFD81, 0x3D40, 0xFF01, 0x3FC0, 0x3E80, 0xFE41,
+    0xFA01, 0x3AC0, 0x3B80, 0xFB41, 0x3900, 0xF9C1, 0xF881, 0x3840,
+    0x2800, 0xE8C1, 0xE981, 0x2940, 0xEB01, 0x2BC0, 0x2A80, 0xEA41,
+    0xEE01, 0x2EC0, 0x2F81, 0xEF40, 0x2D00, 0xEDC1, 0xEC81, 0x2C40,
+    0xE401, 0x24C0, 0x2580, 0xE541, 0x2700, 0xE7C1, 0xE681, 0x2640,
+    0x2200, 0xE2C1, 0xE381, 0x2340, 0xE101, 0x21C0, 0x2080, 0xE041,
+    0xA001, 0x60C0, 0x6180, 0xA141, 0x6300, 0xA3C1, 0xA281, 0x6240,
+    0x6600, 0xA6C1, 0xA781, 0x6740, 0xA501, 0x65C0, 0x6480, 0xA441,
+    0x6C00, 0xACC1, 0xAD81, 0x6D40, 0xAF01, 0x6FC0, 0x6E80, 0xAE41,
+    0xAA01, 0x6AC0, 0x6B81, 0xAB40, 0x6900, 0xA9C1, 0xA881, 0x6840,
+    0x7800, 0xB8C1, 0xB981, 0x7940, 0xBB01, 0x7BC0, 0x7A80, 0xBA41,
+    0xBE01, 0x7EC0, 0x7F80, 0xBF41, 0x7D00, 0xBDC1, 0xBC81, 0x7C40,
+    0xB401, 0x74C0, 0x7580, 0xB541, 0x7700, 0xB7C1, 0xB681, 0x7640,
+    0x7200, 0xB2C1, 0xB381, 0x7340, 0xB101, 0x71C0, 0x7080, 0xB041,
+    0x5001, 0x90C0, 0x9180, 0x5141, 0x9300, 0x53C1, 0x5281, 0x9240,
+    0x9600, 0x56C1, 0x5781, 0x9740, 0x5501, 0x95C0, 0x9481, 0x5440,
+    0x9C00, 0x5CC1, 0x5D81, 0x9D40, 0x5F01, 0x9FC0, 0x9E80, 0x5E41,
+    0x5A00, 0x9AC1, 0x9B81, 0x5B40, 0x9901, 0x59C0, 0x5880, 0x9841,
+    0x8801, 0x48C0, 0x4980, 0x8941, 0x4B00, 0x8BC1, 0x8A81, 0x4A40,
+    0x4E00, 0x8EC1, 0x8F81, 0x4F40, 0x8D01, 0x4DC0, 0x4C80, 0x8C41,
+    0x4400, 0x84C1, 0x8581, 0x4540, 0x8701, 0x47C0, 0x4680, 0x8641,
+    0x8201, 0x42C0, 0x4380, 0x8341, 0x4100, 0x81C1, 0x8081, 0x4040
+};
 
-    // Initialisiere den Session Key Pool mit Nullen
-    for (int i = 0; i < MAX_SESSION_KEYS; ++i) {
-        memset(_sessionKeyPool[i], 0, AES_KEY_SIZE);
-    }
 
-    // *** WICHTIGSTE ÄNDERUNG: Ableiten des initialen Session Keys (Key ID 0) aus dem Master Key ***
-    // Nutzt SHA256 als einfache, aber kryptographisch sichere Key Derivation Function (KDF).
-    // Der Master Key wird gehasht, um einen deterministischen Session Key zu erzeugen.
-    byte derivedKey[HMAC_KEY_SIZE]; // SHA256 erzeugt 32 Bytes
-    _sha256.reset(); // Initialisiert das SHA256 Objekt
-    _sha256.update(_masterKey, HMAC_KEY_SIZE); // Hash über den gesamten Master Key
-    _sha256.finalize(derivedKey, HMAC_KEY_SIZE); // Speichert den 32-Byte Hash
-
-    // Setze den ersten Session Key (Key ID 0) im Pool auf die ersten 16 Bytes des abgeleiteten Schlüssels.
-    // AES-128 benötigt nur 16 Bytes.
-    memcpy(_sessionKeyPool[0], derivedKey, AES_KEY_SIZE);
-    
-    // Setze diesen abgeleiteten Schlüssel als den aktuell aktiven Session Key.
-    // Dies geschieht über setSessionKey (speichert den Schlüssel) und setCurrentKeyId (aktiviert ihn).
-    setSessionKey(0, _sessionKeyPool[0]); // Session Key 0 ist jetzt der abgeleitete Schlüssel
-    setCurrentKeyId(0); // Setze den abgeleiteten Schlüssel als aktuellen aktiven Schlüssel
-}
-
-// Initialisiert die HardwareSerial und optional den DE/RE Pin
-void RS485SecureStack::begin(long baudRate) {
-    _rs485Serial.begin(baudRate);
-    // Optional: Konfiguration von RX/TX Pins bei Nicht-Standard-UARTs (z.B. Serial1/Serial2)
-    // _rs458Serial.setPins(RX_PIN, TX_PIN); 
-
-    if (_deRePin != -1) {
-        pinMode(_deRePin, OUTPUT);
-        digitalWrite(_deRePin, LOW); // Standardmäßig auf Empfangsmodus setzen
-    }
-
-    Serial.print("RS485SecureStack gestartet auf Baudrate ");
-    Serial.print(_rs485Serial.baudRate());
-    Serial.print(", lokale Adresse: ");
-    Serial.println(_localAddress);
-}
-
-// Setzt den DE/RE Pin des RS485 Transceivers
-void RS485SecureStack::setDeRePin(int pin) {
-    _deRePin = pin;
-    if (_deRePin != -1) {
-        pinMode(_deRePin, OUTPUT);
-        digitalWrite(_deRePin, LOW); // Initial auf Empfang
+// NEU: Konstruktor, der den DirectionControl-Zeiger speichert
+RS485SecureStack::RS485SecureStack(RS485DirectionControl* directionControl) 
+    : _directionControl(directionControl), _serial(nullptr), _myAddress(0), _currentKeyId(0) {
+    // Initialisiere Master Key und Session Keys mit Nullen
+    memset(_masterKey, 0, sizeof(_masterKey));
+    for (int i = 0; i < 256; ++i) {
+        memset(_sessionKeys[i], 0, sizeof(_sessionKeys[i]));
     }
 }
 
-// Interne Funktion zum Ändern der Baudrate
-void RS485SecureStack::_setBaudRate(long newBaudRate) {
-    _rs485Serial.updateBaudRate(newBaudRate);
-    Serial.print("Baudrate aktualisiert auf: ");
-    Serial.println(_rs485Serial.baudRate());
+// Initialisiert den Stack
+void RS485SecureStack::begin(uint8_t myAddress, const char* masterKey, uint8_t initialKeyId, HardwareSerial& serial) {
+    _myAddress = myAddress;
+    _serial = &serial;
+    _serial->begin(RS485_INITIAL_BAUD_RATE); // Startet mit einer bekannten Baudrate
+    _serial->setTimeout(SERIAL_TIMEOUT_MS);
+
+    // Initialisiere den Master Key (SHA256 Hash des übergebenen Schlüssels)
+    SHA256 sha256;
+    sha256.reset();
+    sha256.update(masterKey, strlen(masterKey));
+    sha256.finalize(_masterKey, sizeof(_masterKey));
+
+    // Initialisiere Session Key 0 mit dem Master Key
+    setSessionKey(0, _masterKey, sizeof(_masterKey));
+    _currentKeyId = initialKeyId; // Setzt die initial zu verwendende Key ID
+
+    // Wenn ein DirectionControl-Objekt übergeben wurde, initialisiere es
+    if (_directionControl != nullptr) {
+        _directionControl->begin();
+    }
+
+    _resetReceiveBuffer();
 }
 
-// Verarbeitet eingehende Bytes von der seriellen Schnittstelle
-void RS485SecureStack::processIncoming() {
-    while (_rs485Serial.available()) {
-        byte inByte = _rs485Serial.read();
+// Hauptloop-Funktion zum Empfangen von Paketen
+void RS485SecureStack::loop() {
+    while (_serial->available()) {
+        uint8_t incomingByte = _serial->read();
 
-        // Wenn noch kein Paket empfangen wird, suche nach START_BYTE
-        if (!_receivingPacket) {
-            if (inByte == START_BYTE) {
-                _receivingPacket = true;    // Paketempfang beginnt
-                _receiveBufferIdx = 0;      // Pufferindex zurücksetzen
-                _escapeNextByte = false;    // Escape-Status zurücksetzen
-            }
-            continue; // Warte auf START_BYTE oder verarbeite nächstes Byte
-        }
-
-        // Byte-Stuffing Logik
-        if (inByte == ESCAPE_BYTE && !_escapeNextByte) {
-            _escapeNextByte = true; // Nächstes Byte ist escaped
-            continue;
-        }
-
-        // END_BYTE signalisiert Paketende, es sei denn, es ist escaped
-        if (inByte == END_BYTE && !_escapeNextByte) {
-            _receivingPacket = false; // Paketempfang beendet
-            if (_receiveBufferIdx > 0) {
-                // Verarbeite das ungestuffte Paket im _receiveBuffer
-                size_t unstuffedLen = _unstuffBytes(_receiveBuffer, _receiveBufferIdx, _currentPacketRaw);
-                if (unstuffedLen > 0) { // Nur verarbeiten, wenn Unstuffing erfolgreich war
-                    _processReceivedPacket(_currentPacketRaw, unstuffedLen);
-                } else {
-                    Serial.println("Fehler: Unstuffing des Pakets fehlgeschlagen.");
-                }
-            }
-            _receiveBufferIdx = 0; // Puffer für nächstes Paket zurücksetzen
-            continue;
-        }
-
-        // Speichere das empfangene Byte im Puffer
-        if (_receiveBufferIdx < RECEIVE_BUFFER_SIZE) {
-            if (_escapeNextByte) {
-                // Wenn das aktuelle Byte escaped war, un-XORen und speichern
-                _receiveBuffer[_receiveBufferIdx++] = inByte ^ ESCAPE_XOR_MASK;
-                _escapeNextByte = false; // Escape-Status zurücksetzen
+        if (_receiveBufferPos == 0) { // Suchen nach Startbytes
+            if (incomingByte == RS485_START_BYTE_0) {
+                _receiveBuffer[_receiveBufferPos++] = incomingByte;
             } else {
-                // Normales Byte speichern
-                _receiveBuffer[_receiveBufferIdx++] = inByte;
+                // Falsches Startbyte, verwerfen
+                if (_debug) Serial.printf("DBG: Falsches Startbyte 0x%02X\n", incomingByte);
+            }
+        } else if (_receiveBufferPos == 1) {
+            if (incomingByte == RS485_START_BYTE_1) {
+                _receiveBuffer[_receiveBufferPos++] = incomingByte;
+            } else {
+                // Falsches zweites Startbyte, Puffer zurücksetzen
+                if (_debug) Serial.printf("DBG: Falsches zweites Startbyte 0x%02X\n", incomingByte);
+                _resetReceiveBuffer();
             }
         } else {
-            // Pufferüberlauf - Paket verwerfen und State zurücksetzen
-            Serial.println("Fehler: Empfangspufferüberlauf, Paket verworfen.");
-            _receivingPacket = false;
-            _receiveBufferIdx = 0;
-            _escapeNextByte = false;
+            // Normale Daten oder Escape-Sequenz
+            if (incomingByte == RS485_START_BYTE_0 || incomingByte == RS485_START_BYTE_1) {
+                // Unerwartetes Startbyte, Puffer zurücksetzen und neu beginnen
+                if (_debug) Serial.println("DBG: Unerwartetes Startbyte im Paket, Puffer reset.");
+                _resetReceiveBuffer();
+                if (incomingByte == RS485_START_BYTE_0) { // Neuen Start erfassen
+                     _receiveBuffer[_receiveBufferPos++] = incomingByte;
+                }
+                continue; // Nächstes Byte lesen
+            }
+            
+            _receiveBuffer[_receiveBufferPos++] = incomingByte;
+
+            // Paketlänge überprüfen (Mindestlänge Header + IV + HMAC + CRC)
+            if (_receiveBufferPos >= TOTAL_LENGTH_INDEX + 1) { // totalLength Byte wurde empfangen
+                uint8_t totalLength = _receiveBuffer[TOTAL_LENGTH_INDEX];
+                
+                // Überprüfen, ob die deklarierte Länge im akzeptablen Bereich liegt
+                // Header (8) + IV (16) + HMAC (32) + CRC (2) = 58 Bytes Mindestlänge für leeres Payload
+                // Maximale Länge = MAX_PACKET_SIZE
+                if (totalLength < (8 + RS485_IV_LENGTH + RS485_HMAC_LENGTH + 2) || totalLength > MAX_PACKET_SIZE) {
+                    if (_debug) Serial.printf("DBG: Ungültige Paketlänge: %d (Pos: %d). Resetting buffer.\n", totalLength, _receiveBufferPos);
+                    _resetReceiveBuffer();
+                    continue; // Beginne neu mit der Suche nach Startbytes
+                }
+
+                // Wenn genug Bytes für das gesamte Paket empfangen wurden (inkl. Stuffing!)
+                // Achtung: totalLength ist die LÄNGE des UNgestufften Pakets.
+                // Das gestuffte Paket kann bis zu doppelt so lang sein.
+                // Wir müssen hier auf die LÄNGE des GESTUFFTEN Pakets warten.
+                // Ein einfaches Prüfen auf totalLength reicht hier nicht!
+                // Wir nehmen an, dass der Byte-Stuffing-Prozess das Paket maximal verdoppelt.
+                // Daher ist MAX_PACKET_SIZE * 2 unser maximaler Puffer.
+                // Wir können das Paket nur komplett verarbeiten, wenn _receiveBufferPos >= totalLength ist.
+                // Das Unstuffing passiert danach.
+                if (_receiveBufferPos >= totalLength + 2) { // +2 für Startbytes
+                    // Versuche das Paket zu extrahieren und zu verarbeiten
+                    if (_extractPacket()) {
+                        // Paket wurde erfolgreich verarbeitet, Puffer zurücksetzen
+                        _resetReceiveBuffer();
+                    } else {
+                        // Paketfehler (CRC/HMAC), Puffer zurücksetzen
+                        _resetReceiveBuffer();
+                    }
+                }
+            }
+            // Maximalen Pufferüberlauf verhindern
+            if (_receiveBufferPos >= (MAX_PACKET_SIZE * 2) -1) {
+                if (_debug) Serial.println("DBG: Receive buffer overflow. Resetting.");
+                _resetReceiveBuffer();
+            }
         }
     }
 }
 
-// Sendet Rohdaten über die RS485-Schnittstelle
-void RS485SecureStack::_sendRaw(const byte* data, size_t len) {
-    if (_deRePin != -1) {
-        digitalWrite(_deRePin, HIGH); // Auf Sende-Modus schalten
-        delayMicroseconds(20); // Kurze Verzögerung für Transceiver-Umschaltung
-    }
-    _rs485Serial.write(data, len);
-    _rs485Serial.flush(); // Sicherstellen, dass alle Bytes gesendet wurden
-
-    // Kurze Pause, um das letzte Byte zu senden, bevor auf Empfang umgeschaltet wird.
-    // Dies hängt von der Baudrate ab. Eine feste Verzögerung ist hier oft ausreichend.
-    delay(1); 
-
-    if (_deRePin != -1) {
-        digitalWrite(_deRePin, LOW); // Auf Empfangs-Modus zurückschalten
-    }
+// Registriert eine Callback-Funktion
+void RS485SecureStack::registerReceiveCallback(PacketReceivedCallback callback) {
+    _packetReceivedCallback = callback;
 }
 
-// Sendet eine Nachricht (öffentliche Methode)
-bool RS485SecureStack::sendMessage(byte targetAddress, char msgType, const String& payload) {
-    size_t plainLen = payload.length();
+// Sendet eine Nachricht
+bool RS458SecureStack::sendMessage(uint8_t destinationAddress, uint8_t senderAddress, char messageType, const String& payload, bool requiresAck) {
+    // Überprüfen, ob Payload zu lang ist
+    if (payload.length() > MAX_PACKET_SIZE - (8 + RS485_IV_LENGTH + RS485_HMAC_LENGTH + 2)) {
+        if (_debug) Serial.println("ERR: Payload zu lang.");
+        return false;
+    }
+
+    // Puffer für verschlüsselten Payload (Payload + Padding)
+    // AES verschlüsselt in 16-Byte-Blöcken
+    size_t paddedPayloadLen = payload.length();
+    if (paddedPayloadLen % RS485_IV_LENGTH != 0) {
+        paddedPayloadLen = ((paddedPayloadLen / RS485_IV_LENGTH) + 1) * RS485_IV_LENGTH;
+    }
+    uint8_t encryptedPayloadBuffer[paddedPayloadLen];
+    memset(encryptedPayloadBuffer, 0, paddedPayloadLen);
+    memcpy(encryptedPayloadBuffer, payload.c_str(), payload.length());
+
+    // IV generieren
+    uint8_t iv[RS485_IV_LENGTH];
+    _generateIV(iv);
+
+    // Payload verschlüsseln
+    _encryptAES(encryptedPayloadBuffer, paddedPayloadLen, _sessionKeys[_currentKeyId], iv);
+
+    // Gesamtpaket zusammenbauen (unverschlüsselte Teile + IV + verschlüsselter Payload + HMAC + CRC)
+    // Header (8 Bytes) + IV (16 Bytes) + Encrypted Payload (padded) + HMAC (32 Bytes) + CRC (2 Bytes)
+    size_t packetBodyLength = RS485_IV_LENGTH + paddedPayloadLen + RS485_HMAC_LENGTH + 2;
+    uint8_t rawPacket[8 + packetBodyLength]; // Header + Body
+
+    // Header füllen
+    rawPacket[START_BYTE_0_INDEX] = RS485_START_BYTE_0;
+    rawPacket[START_BYTE_1_INDEX] = RS485_START_BYTE_1;
+    rawPacket[PROTOCOL_VERSION_INDEX] = RS485_PROTOCOL_VERSION;
+    // Gesamtlänge (ab Startbyte 0xDE)
+    rawPacket[TOTAL_LENGTH_INDEX] = (uint8_t)(8 + packetBodyLength); // Gesamtlänge des *un-stuffed* Pakets
+    rawPacket[MESSAGE_TYPE_INDEX] = messageType;
+    rawPacket[DEST_ADDRESS_INDEX] = destinationAddress;
+    rawPacket[SENDER_ADDRESS_INDEX] = senderAddress;
+    rawPacket[KEY_ID_INDEX] = _currentKeyId;
+
+    // IV hinzufügen
+    memcpy(&rawPacket[8], iv, RS485_IV_LENGTH);
+
+    // Verschlüsselten Payload hinzufügen
+    memcpy(&rawPacket[8 + RS485_IV_LENGTH], encryptedPayloadBuffer, paddedPayloadLen);
+
+    // HMAC berechnen und hinzufügen
+    uint8_t hmacResult[RS485_HMAC_LENGTH];
+    // HMAC über Header, IV und verschlüsseltem Payload
+    _calculateHMAC(_sessionKeys[_currentKeyId], rawPacket, 8 + RS485_IV_LENGTH + paddedPayloadLen, hmacResult);
+    memcpy(&rawPacket[8 + RS485_IV_LENGTH + paddedPayloadLen], hmacResult, RS485_HMAC_LENGTH);
+
+    // CRC16 berechnen und hinzufügen (über alles von Startbyte 0 bis HMAC-Ende)
+    uint16_t crc = _calculateCRC16(rawPacket, 8 + RS485_IV_LENGTH + paddedPayloadLen + RS485_HMAC_LENGTH);
+    rawPacket[8 + RS485_IV_LENGTH + paddedPayloadLen + RS485_HMAC_LENGTH] = (uint8_t)(crc & 0xFF);
+    rawPacket[8 + RS485_IV_LENGTH + paddedPayloadLen + RS485_HMAC_LENGTH + 1] = (uint8_t)((crc >> 8) & 0xFF);
+
+    // Byte-Stuffing anwenden
+    size_t stuffedLength = _byteStuff(rawPacket, 8 + packetBodyLength, _stuffedPacketBuffer);
+
+    // NEU: Setze den Transceiver in den Sende-Modus
+    if (_directionControl != nullptr) {
+        _directionControl->setTransmitMode();
+        delayMicroseconds(RS485_TX_ENABLE_DELAY_US); 
+    }
+
+    // Sende das gestuffte Paket
+    _serial->write(_stuffedPacketBuffer, stuffedLength);
+    _serial->flush(); // Warte, bis alle Bytes gesendet wurden
+
+    // NEU: Setze den Transceiver sofort nach dem Senden zurück in den Empfangs-Modus
+    if (_directionControl != nullptr) {
+        delayMicroseconds(RS485_TX_DISABLE_DELAY_US); 
+        _directionControl->setReceiveMode();
+    }
     
-    // Prüfen, ob die Klartext-Nutzlast die maximale Größe überschreitet
-    if (plainLen > MAX_RAW_PAYLOAD_SIZE) {
-        Serial.println("Fehler: Nutzlast zu groß für MAX_RAW_PAYLOAD_SIZE.");
-        return false;
+    // Wenn ACK erforderlich, warten und prüfen
+    if (requiresAck) {
+        return _waitForAck(500); // 500ms Timeout für ACK
     }
 
-    // Generiere einen zufälligen IV für AES-CBC.
-    // HINWEIS: random(256) ist ein Pseudozufallsgenerator.
-    // FÜR PRODUKTIONSEINSATZ MUSS HIER ein kryptographisch sicherer Zufallszahlengenerator (CSPRNG)
-    // wie `esp_random()` auf ESP32 verwendet werden!
-    byte iv[IV_SIZE];
-    for (int i = 0; i < IV_SIZE; i++) {
-        // FÜR ESP32 NUTZE: iv[i] = esp_random() & 0xFF;
-        iv[i] = random(256); 
-    }
-
-    // Puffer für die verschlüsselte Nutzlast
-    byte encryptedPayload[MAX_PADDED_ENCRYPTED_PAYLOAD_SIZE]; 
-    size_t encryptedLen = _encryptPayload((byte*)payload.c_str(), plainLen, encryptedPayload, _currentSessionKey, iv);
-
-    if (encryptedLen == 0) {
-        Serial.println("Fehler: Verschlüsselung der Nutzlast fehlgeschlagen (z.B. falsche Größe nach Padding).");
-        return false;
-    }
-    
-    // Baue das Paket und sende es
-    bool success = _buildAndSendPacket(targetAddress, msgType, encryptedPayload, encryptedLen, _currentSessionKeyId, iv);
-
-    // Nach erfolgreichem Senden die Nachrichtenzahl im KeyRotationManager aktualisieren
-    if (success && _keyRotationManager) {
-        _keyRotationManager->notifyMessageSent();
-    }
-    return success;
-}
-
-// Sendet ein ACK oder NACK
-bool RS485SecureStack::sendAckNack(byte targetAddress, char originalMsgType, bool success) {
-    if (!_ackEnabled) return false; // Wenn ACKs/NACKs deaktiviert sind, nichts tun
-
-    // Die Payload für ACK/NACK enthält den Original-Nachrichtentyp und das Ergebnis ('1'/'0')
-    String ackNackPayload = String(originalMsgType) + (success ? "1" : "0");
-    
-    // Generiere einen IV, auch für kleine Payloads
-    byte iv[IV_SIZE];
-    for (int i = 0; i < IV_SIZE; i++) {
-        // FÜR ESP32 NUTZE: iv[i] = esp_random() & 0xFF;
-        iv[i] = random(256); // FÜR PRODUKTION: CSPRNG nutzen!
-    }
-    
-    // Puffer für verschlüsselte ACK/NACK Payload (mindestens eine AES-Blockgröße)
-    byte encryptedPayload[AES_BLOCK_SIZE]; 
-    size_t encryptedLen = _encryptPayload((byte*)ackNackPayload.c_str(), ackNackPayload.length(), encryptedPayload, _currentSessionKey, iv);
-
-    if (encryptedLen == 0) {
-        Serial.println("Fehler: ACK/NACK-Verschlüsselung fehlgeschlagen.");
-        return false;
-    }
-
-    // Sende das ACK/NACK Paket
-    return _buildAndSendPacket(targetAddress, (success ? MSG_TYPE_ACK : MSG_TYPE_NACK), encryptedPayload, encryptedLen, _currentSessionKeyId, iv);
-}
-
-// Interne Methode zum Bauen und Senden eines Pakets
-bool RS485SecureStack::_buildAndSendPacket(byte targetAddress, char msgType, const byte* encryptedPayload, size_t encryptedLen, uint16_t keyId, const byte iv[IV_SIZE]) {
-    // Überprüfung der Größe des verschlüsselten Payloads
-    if (encryptedLen % AES_BLOCK_SIZE != 0 || encryptedLen > MAX_PADDED_ENCRYPTED_PAYLOAD_SIZE) {
-        Serial.println("Fehler: Ungültige verschlüsselte Payload-Länge.");
-        return false;
-    }
-
-    // Berechne die Größe des logischen Pakets (Header + Encrypted Payload + HMAC)
-    size_t logicalPacketLen = HEADER_SIZE + encryptedLen + HMAC_TAG_SIZE;
-
-    // Prüfe, ob das logische Paket nicht zu groß ist
-    if (logicalPacketLen > MAX_LOGICAL_PACKET_SIZE) {
-        Serial.println("Fehler: Logisches Paket zu groß.");
-        return false;
-    }
-
-    // Temporärer Puffer für das logische Paket vor dem Stuffing
-    byte tempLogicalPacket[MAX_LOGICAL_PACKET_SIZE];
-    size_t currentIdx = 0;
-
-    // 1. Header erstellen
-    tempLogicalPacket[currentIdx++] = _localAddress;
-    tempLogicalPacket[currentIdx++] = targetAddress;
-    tempLogicalPacket[currentIdx++] = (byte)msgType;
-    tempLogicalPacket[currentIdx++] = (byte)(keyId >> 8);   // Key ID MSB
-    tempLogicalPacket[currentIdx++] = (byte)(keyId & 0xFF); // Key ID LSB
-    memcpy(&tempLogicalPacket[currentIdx], iv, IV_SIZE);
-    currentIdx += IV_SIZE;
-
-    // 2. Verschlüsselte Nutzlast hinzufügen
-    memcpy(&tempLogicalPacket[currentIdx], encryptedPayload, encryptedLen);
-    currentIdx += encryptedLen;
-
-    // 3. HMAC über (Header + Encrypted Payload) mit dem Master Key berechnen
-    // Dies stellt die Authentizität und Integrität des Pakets sicher.
-    _hmac.setKey(_masterKey, HMAC_KEY_SIZE); // Setze den Master Key für HMAC
-    _hmac.update(tempLogicalPacket, currentIdx); // HMAC über Header und verschlüsselte Payload
-    byte hmacTag[HMAC_TAG_SIZE];
-    _hmac.finalize(hmacTag, HMAC_TAG_SIZE); // Berechne den HMAC Tag
-
-    // 4. HMAC Tag anfügen
-    memcpy(&tempLogicalPacket[currentIdx], hmacTag, HMAC_TAG_SIZE);
-    currentIdx += HMAC_TAG_SIZE; // currentIdx ist nun gleich logicalPacketLen
-
-    // 5. Byte-Stuffing des gesamten logischen Pakets
-    // Puffer für das gestuffte Paket, Worst-Case Größe
-    byte stuffedPacket[MAX_PHYSICAL_PACKET_SIZE]; 
-    stuffedPacket[0] = START_BYTE; // Füge das Start-Byte hinzu
-
-    // Führe das Stuffing durch und speichere im Puffer, beginnend nach dem START_BYTE
-    size_t stuffedLen = _stuffBytes(tempLogicalPacket, logicalPacketLen, &stuffedPacket[1]);
-    
-    if (stuffedLen == 0 && logicalPacketLen > 0) { // Stuffing-Fehler erkannt
-        Serial.println("Fehler: Byte-Stuffing fehlgeschlagen.");
-        return false;
-    }
-
-    // Füge das End-Byte nach den gestufften Daten hinzu
-    stuffedPacket[1 + stuffedLen] = END_BYTE;
-
-    // 6. Sende das vollständig gerahmte und gestuffte Paket
-    _sendRaw(stuffedPacket, stuffedLen + 2); // Länge ist gestuffte Daten + START_BYTE + END_BYTE
     return true;
 }
 
-// Verarbeitet ein vollständig empfangenes, ungestufftes Logisches Paket
-void RS485SecureStack::_processReceivedPacket(const byte* rawPacket, size_t rawLen) {
-    // Speichere das rohe Paket und dessen Länge für Debugging/Monitoring
-    _currentPacketRawLen = rawLen;
-    memcpy(_currentPacketRaw, rawPacket, rawLen); 
+// Setzt einen neuen Session Key
+bool RS485SecureStack::setSessionKey(uint8_t keyId, const uint8_t* keyData, size_t keyLen) {
+    if (keyLen != 32) { // Session Keys müssen 32 Bytes für SHA256 HMAC sein
+        if (_debug) Serial.println("ERR: Session Key muss 32 Bytes lang sein.");
+        return false;
+    }
+    memcpy(_sessionKeys[keyId], keyData, keyLen);
+    return true;
+}
 
-    // Flags für die Verifikation zurücksetzen
-    _hmacVerified = false;
-    _checksumVerified = true; // Placeholder: Wenn keine separate Checksumme verwendet wird, ist dies immer true
-
-    // Minimale Paketgröße prüfen: Header + HMAC_TAG_SIZE
-    if (rawLen < (HEADER_SIZE + HMAC_TAG_SIZE)) { 
-        Serial.println("Fehler: Paket zu kurz (Minimum Header + HMAC nicht erreicht).");
+// Wechselt zur Verwendung eines neuen Schlüssels für ausgehende Nachrichten
+void RS485SecureStack::setCurrentKeyId(uint8_t keyId) {
+    if (keyId >= 256) {
+        if (_debug) Serial.println("ERR: Ungültige Key ID.");
         return;
     }
+    _currentKeyId = keyId;
+    if (_debug) Serial.printf("DBG: Aktuelle Key ID auf %d gesetzt.\n", _currentKeyId);
+}
 
-    size_t currentIdx = 0;
-
-    // Header-Informationen extrahieren
-    _currentPacketSource = rawPacket[currentIdx++];
-    _currentPacketTarget = rawPacket[currentIdx++];
-    _currentPacketMsgType = (char)rawPacket[currentIdx++];
-    uint16_t receivedKeyId = (uint16_t)rawPacket[currentIdx] << 8 | rawPacket[currentIdx + 1];
-    currentIdx += 2;
-    memcpy(_currentPacketIV, &rawPacket[currentIdx], IV_SIZE);
-    currentIdx += IV_SIZE;
-
-    // Länge der verschlüsselten Nutzlast ermitteln
-    // rawLen (gesamtes logisches Paket) - HMAC_TAG_SIZE - HEADER_SIZE = encryptedPayloadLen
-    size_t encryptedPayloadLen = rawLen - HMAC_TAG_SIZE - HEADER_SIZE;
-
-    // 1. HMAC Verifikation
-    // Der empfangene HMAC-Tag befindet sich am Ende des Pakets
-    byte receivedHmac[HMAC_TAG_SIZE];
-    memcpy(receivedHmac, &rawPacket[rawLen - HMAC_TAG_SIZE], HMAC_TAG_SIZE);
-
-    // Berechne den HMAC über Header und verschlüsselte Payload (ohne den empfangenen HMAC selbst)
-    _hmac.setKey(_masterKey, HMAC_KEY_SIZE); // Setze den Master Key für die Berechnung
-    _hmac.update(rawPacket, rawLen - HMAC_TAG_SIZE); // HMAC über den Teil, der gesichert ist
-    byte calculatedHmac[HMAC_TAG_SIZE];
-    _hmac.finalize(calculatedHmac, HMAC_TAG_SIZE); // Berechne den Tag
-
-    // Vergleiche den berechneten HMAC mit dem empfangenen HMAC
-    if (memcmp(receivedHmac, calculatedHmac, HMAC_TAG_SIZE) != 0) {
-        Serial.println("Fehler: HMAC Mismatch - Paketintegrität kompromittiert oder falscher Master Key.");
-        _hmacVerified = false;
-        // Optional: NACK senden, wenn ACKs aktiviert sind und die Adresse für uns war
-        if (_ackEnabled && (_currentPacketTarget == _localAddress || _currentPacketTarget == 0xFF)) {
-            sendAckNack(_currentPacketSource, _currentPacketMsgType, false);
-        }
-        return;
+// Setzt die Baudrate der seriellen Schnittstelle
+void RS485SecureStack::setBaudRate(long baudRate) {
+    if (_serial) {
+        _serial->end();
+        _serial->begin(baudRate);
+        _serial->setTimeout(SERIAL_TIMEOUT_MS);
+        if (_debug) Serial.printf("DBG: Baudrate auf %ld gesetzt.\n", baudRate);
     }
-    _hmacVerified = true; // HMAC ist gültig
+}
 
-    // 2. Zieladressen-Prüfung
-    if (_currentPacketTarget != _localAddress && _currentPacketTarget != 0xFF) { 
-        // Paket ist weder für diesen Knoten noch ein Broadcast. Verwerfen nach HMAC-Check.
-        // Serial.println("Paket nicht für diese Adresse bestimmt.");
-        return; 
+// Private Hilfsfunktionen
+
+void RS485SecureStack::_resetReceiveBuffer() {
+    _receiveBufferPos = 0;
+    memset(_receiveBuffer, 0, sizeof(_receiveBuffer)); // Optional: Puffer leeren
+}
+
+// Prüft, ob ein Byte ein Startbyte ist (DE oder AD)
+bool RS485SecureStack::_isStartByte(uint8_t byte) {
+    return (byte == RS485_START_BYTE_0 || byte == RS485_START_BYTE_1);
+}
+
+// Extrahiert und verarbeitet ein Paket aus dem Empfangspuffer
+bool RS485SecureStack::_extractPacket() {
+    // Unstuffing des empfangenen Puffers
+    size_t unstuffedLength = _byteUnstuff(_receiveBuffer, _receiveBufferPos, _unstuffedPacketBuffer);
+
+    // Mindestlänge prüfen: Header (8) + IV (16) + HMAC (32) + CRC (2) = 58 Bytes
+    if (unstuffedLength < (8 + RS485_IV_LENGTH + RS485_HMAC_LENGTH + 2)) {
+        if (_debug) Serial.printf("ERR: Unstuffed Paket zu kurz (%d Bytes).\n", unstuffedLength);
+        return false;
     }
 
-    // 3. Key ID Prüfung (Abgleich des Session Key)
-    if (receivedKeyId != _currentSessionKeyId) {
-        Serial.print("Warnung: Paket mit unerwarteter Key ID empfangen (erwartet ");
-        Serial.print(_currentSessionKeyId);
-        Serial.print(", erhalten ");
-        Serial.print(receivedKeyId);
-        Serial.println("). Nutzlast wird nicht entschlüsselt.");
-        // Wenn ein Callback registriert ist, kann er über den Schlüssel-Mismatch informiert werden
-        if (_receiveCallback) {
-             _receiveCallback(_currentPacketSource, _currentPacketMsgType, "KEY_MISMATCH");
-        }
-        // Optional: NACK senden, da wir die Payload nicht verarbeiten können
-        if (_ackEnabled && (_currentPacketTarget == _localAddress || _currentPacketTarget == 0xFF)) {
-            sendAckNack(_currentPacketSource, _currentPacketMsgType, false);
-        }
-        return;
-    }
-    
-    // 4. Nutzlast entschlüsseln
-    // Puffer für die entschlüsselte Nutzlast
-    byte decryptedPayload[MAX_RAW_PAYLOAD_SIZE + AES_BLOCK_SIZE]; // Max. mögliche Größe (inkl. Padding vor dem Entfernen)
-    size_t decryptedLen = _decryptPayload(&rawPacket[currentIdx], encryptedPayloadLen, decryptedPayload, _currentSessionKey, _currentPacketIV);
-
-    if (decryptedLen == 0) {
-        Serial.println("Fehler: Entschlüsselung fehlgeschlagen oder ungültiges Padding.");
-        // Optional: NACK senden
-        if (_ackEnabled && (_currentPacketTarget == _localAddress || _currentPacketTarget == 0xFF)) {
-            sendAckNack(_currentPacketSource, _currentPacketMsgType, false);
-        }
-        return;
+    // Header-Prüfung
+    if (_unstuffedPacketBuffer[START_BYTE_0_INDEX] != RS485_START_BYTE_0 ||
+        _unstuffedPacketBuffer[START_BYTE_1_INDEX] != RS485_START_BYTE_1 ||
+        _unstuffedPacketBuffer[PROTOCOL_VERSION_INDEX] != RS485_PROTOCOL_VERSION) {
+        if (_debug) Serial.println("ERR: Ungültiger Header im unstuffed Paket.");
+        return false;
     }
 
-    // Null-Terminierung für Umwandlung in String.
-    // Sicherstellen, dass der Puffer groß genug ist (+1 für Null-Terminator).
-    if (decryptedLen < (MAX_RAW_PAYLOAD_SIZE + AES_BLOCK_SIZE)) {
-        decryptedPayload[decryptedLen] = '\0';
+    uint8_t totalLength = _unstuffedPacketBuffer[TOTAL_LENGTH_INDEX];
+    if (totalLength != unstuffedLength) {
+        if (_debug) Serial.printf("ERR: Deklarierte Länge (%d) stimmt nicht mit unstuffed Länge (%d) überein.\n", totalLength, unstuffedLength);
+        return false;
+    }
+
+    // CRC16 prüfen (CRC befindet sich am Ende des unstuffed Pakets)
+    uint16_t receivedCrc = (_unstuffedPacketBuffer[unstuffedLength - 2] | (_unstuffedPacketBuffer[unstuffedLength - 1] << 8));
+    uint16_t calculatedCrc = _calculateCRC16(_unstuffedPacketBuffer, unstuffedLength - 2); // CRC über alles außer den letzten 2 Bytes (CRC selbst)
+
+    bool crcVerified = (receivedCrc == calculatedCrc);
+    if (!crcVerified) {
+        if (_debug) Serial.printf("ERR: CRC16 Fehler. Empfangen: 0x%04X, Berechnet: 0x%04X\n", receivedCrc, calculatedCrc);
+        return false; // CRC-Fehler, Paket verwerfen
+    }
+
+    uint8_t keyId = _unstuffedPacketBuffer[KEY_ID_INDEX];
+    if (keyId >= 256) {
+        if (_debug) Serial.printf("ERR: Ungültige Key ID (%d) im Header.\n", keyId);
+        return false; // Ungültige Key ID
+    }
+
+    uint8_t receivedHmac[RS485_HMAC_LENGTH];
+    memcpy(receivedHmac, &_unstuffedPacketBuffer[totalLength - RS485_HMAC_LENGTH - 2], RS485_HMAC_LENGTH); // -2 für CRC
+
+    uint8_t calculatedHmac[RS485_HMAC_LENGTH];
+    // HMAC über alles bis zum Beginn des HMAC-Feldes
+    _calculateHMAC(_sessionKeys[keyId], _unstuffedPacketBuffer, totalLength - RS485_HMAC_LENGTH - 2, calculatedHmac);
+
+    bool hmacVerified = true;
+    for (size_t i = 0; i < RS485_HMAC_LENGTH; ++i) {
+        if (receivedHmac[i] != calculatedHmac[i]) {
+            hmacVerified = false;
+            break;
+        }
+    }
+
+    if (!hmacVerified) {
+        if (_debug) Serial.println("ERR: HMAC-Fehler. Paket nicht authentifiziert.");
+        // Dennoch könnte das Paket ein ACK/NACK sein, das selbst HMAC-gesichert ist.
+        // Wenn es mein ACK ist und der HMAC nicht stimmt, ist etwas faul.
+        // Für den Callback geben wir hmacVerified = false mit.
+        // Wir verwerfen das Paket nicht komplett hier, sondern lassen den Callback entscheiden.
+    }
+
+    // IV und verschlüsselte Payload extrahieren
+    uint8_t iv[RS485_IV_LENGTH];
+    memcpy(iv, &_unstuffedPacketBuffer[8], RS485_IV_LENGTH);
+
+    size_t encryptedPayloadStart = 8 + RS485_IV_LENGTH;
+    size_t encryptedPayloadLen = totalLength - encryptedPayloadStart - RS485_HMAC_LENGTH - 2; // -2 für CRC
+
+    uint8_t decryptedPayloadBuffer[encryptedPayloadLen];
+    memcpy(decryptedPayloadBuffer, &_unstuffedPacketBuffer[encryptedPayloadStart], encryptedPayloadLen);
+
+    // Payload entschlüsseln (nur wenn HMAC_OK ist, sonst wäre Entschlüsselung nutzlos und potenziell gefährlich)
+    if (hmacVerified) {
+        _decryptAES(decryptedPayloadBuffer, encryptedPayloadLen, _sessionKeys[keyId], iv);
     } else {
-        // Sollte nicht passieren, wenn MAX_RAW_PAYLOAD_SIZE korrekt dimensioniert ist.
-        Serial.println("Warnung: Entschlüsselte Nutzlast ist größer als erwartet.");
-        return; // Oder Fehlerbehandlung
-    }
-    String payloadStr = (char*)decryptedPayload;
-
-    // 5. Callback aufrufen (wenn registriert)
-    if (_receiveCallback) {
-        _receiveCallback(_currentPacketSource, _currentPacketMsgType, payloadStr);
+        // Wenn HMAC nicht verifiziert, Payload mit Nullen füllen, um keine sensiblen Daten preiszugeben.
+        // Oder den Callback das leere Payload verarbeiten lassen.
+        memset(decryptedPayloadBuffer, 0, encryptedPayloadLen);
+        if (_debug) Serial.println("DBG: Payload nicht entschlüsselt wegen fehlendem HMAC.");
     }
     
-    // 6. ACK senden (falls aktiviert und alles erfolgreich war und an uns gerichtet)
-    if (_ackEnabled && (_currentPacketTarget == _localAddress || _currentPacketTarget == 0xFF)) {
-        sendAckNack(_currentPacketSource, _currentPacketMsgType, true);
-    }
-}
+    // Packet_t Struktur füllen
+    Packet_t receivedPacket;
+    receivedPacket.totalLength = totalLength;
+    receivedPacket.messageType = (char)_unstuffedPacketBuffer[MESSAGE_TYPE_INDEX];
+    receivedPacket.destinationAddress = _unstuffedPacketBuffer[DEST_ADDRESS_INDEX];
+    receivedPacket.senderAddress = _unstuffedPacketBuffer[SENDER_ADDRESS_INDEX];
+    receivedPacket.keyId = keyId;
+    receivedPacket.payload = String((char*)decryptedPayloadBuffer); // Konvertierung von uint8_t* zu String
+    receivedPacket.requiresAck = false; // Wird nicht aus Paket gelesen, muss vom Sender bekannt sein
+    receivedPacket.isAck = (receivedPacket.messageType == MSG_TYPE_ACK_NACK);
+    receivedPacket.hmacVerified = hmacVerified;
+    receivedPacket.crcVerified = crcVerified;
 
-// Registriert die Callback-Funktion
-void RS485SecureStack::registerReceiveCallback(ReceiveCallback callback) {
-    _receiveCallback = callback;
-}
+    // Nur Pakete, die für uns sind oder Broadcasts, verarbeiten
+    // Und wir dürfen keine ACK/NACKs von uns selbst verarbeiten
+    if ((receivedPacket.destinationAddress == _myAddress || receivedPacket.destinationAddress == 255) && 
+        !(receivedPacket.isAck && receivedPacket.senderAddress == _myAddress)) {
+        
+        if (_debug) {
+            Serial.printf("RCV: Type='%c', Dest=%d, Sender=%d, KeyID=%d, Len=%d, Payload='%s'\n",
+                          receivedPacket.messageType, receivedPacket.destinationAddress,
+                          receivedPacket.senderAddress, receivedPacket.keyId,
+                          receivedPacket.payload.length(), receivedPacket.payload.c_str());
+            Serial.printf("HMAC_OK: %s, CRC_OK: %s\n", receivedPacket.hmacVerified ? "YES" : "NO", receivedPacket.crcVerified ? "YES" : "NO");
+        }
 
-// Verschlüsselt die Klartext-Nutzlast
-size_t RS485SecureStack::_encryptPayload(const byte* plain, size_t plainLen, byte* encrypted, const byte key[AES_KEY_SIZE], byte iv[IV_SIZE]) {
-    // PKCS7 Padding: Bestimme die Länge nach Padding, die ein Vielfaches der AES_BLOCK_SIZE ist
-    size_t paddedLen = plainLen;
-    if (paddedLen % AES_BLOCK_SIZE != 0) {
-        paddedLen = (plainLen / AES_BLOCK_SIZE + 1) * AES_BLOCK_SIZE;
-    }
-    
-    // Prüfe auf Pufferüberlauf für die gepaddete Payload
-    if (paddedLen > MAX_PADDED_ENCRYPTED_PAYLOAD_SIZE) {
-        Serial.println("Fehler: Puffer für gepaddete Nutzlast ist zu klein.");
-        return 0; // Rückgabe 0 bei Fehler
-    }
+        if (_packetReceivedCallback) {
+            _packetReceivedCallback(receivedPacket);
+        }
 
-    // Wenn paddedLen 0 ist, macht die Verschlüsselung keinen Sinn
-    if (paddedLen == 0) return 0;
-
-    byte paddedPlain[paddedLen];
-    memcpy(paddedPlain, plain, plainLen); // Kopiere Klartext
-
-    // Fülle den Rest des Puffers mit Padding-Bytes
-    byte paddingByte = paddedLen - plainLen;
-    for (size_t i = plainLen; i < paddedLen; i++) {
-        paddedPlain[i] = paddingByte;
-    }
-
-    // Setze AES-Schlüssel und IV und verschlüssele
-    _aes.setKey(key, AES_KEY_SIZE);
-    _aes.setIV(iv, IV_SIZE);
-    _aes.encrypt(encrypted, paddedPlain, paddedLen);
-
-    return paddedLen; // Gibt die Länge der verschlüsselten Daten zurück
-}
-
-// Entschlüsselt die verschlüsselte Nutzlast
-size_t RS485SecureStack::_decryptPayload(const byte* encrypted, size_t encryptedLen, byte* decrypted, const byte key[AES_KEY_SIZE], const byte iv[IV_SIZE]) {
-    // Prüfe auf gültige Länge für AES-Entschlüsselung
-    if (encryptedLen == 0 || encryptedLen % AES_BLOCK_SIZE != 0) {
-        Serial.println("Fehler: Entschlüsselte Länge ist 0 oder kein Vielfaches der Blockgröße.");
-        return 0;
-    }
-    
-    // Prüfe auf Pufferüberlauf vor der Entschlüsselung
-    if (encryptedLen > (MAX_RAW_PAYLOAD_SIZE + AES_BLOCK_SIZE)) { // Max mögliche Größe nach Entschlüsselung
-        Serial.println("Fehler: Entschlüsselungspuffer ist zu klein für diese Datenmenge.");
-        return 0;
-    }
-
-
-    // Setze AES-Schlüssel und IV und entschlüssele
-    _aes.setKey(key, AES_KEY_SIZE);
-    _aes.setIV(iv, IV_SIZE);
-    _aes.decrypt(decrypted, encrypted, encryptedLen);
-
-    // PKCS7 Unpadding
-    byte paddingByte = decrypted[encryptedLen - 1]; // Letztes Byte enthält die Anzahl der Padding-Bytes
-    
-    // Prüfe auf gültigen Padding-Wert
-    // Padding muss zwischen 1 und AES_BLOCK_SIZE liegen
-    // Und die Länge muss mindestens so groß sein wie der Padding-Wert
-    if (paddingByte == 0 || paddingByte > AES_BLOCK_SIZE || paddingByte > encryptedLen) {
-        Serial.print("Fehler: Ungültiger Padding-Wert: ");
-        Serial.println(paddingByte);
-        return 0;
-    }
-    
-    // Prüfe, ob alle Padding-Bytes korrekt sind
-    for (size_t i = 0; i < paddingByte; i++) {
-        if (decrypted[encryptedLen - 1 - i] != paddingByte) {
-            Serial.println("Fehler: Ungültiges Padding-Muster.");
-            return 0; // Ungültiges Padding-Muster
+        // Automatisch ACK senden, wenn erforderlich und gültig
+        // Und es ist KEINE ACK/NACK Nachricht
+        if (!receivedPacket.isAck && receivedPacket.requiresAck && receivedPacket.destinationAddress == _myAddress && hmacVerified && crcVerified) {
+             _sendAck(receivedPacket.senderAddress, _myAddress, receivedPacket.keyId);
+        }
+    } else {
+        if (_debug) {
+            Serial.printf("DBG: Paket für andere Adresse (%d), Sender=%d, oder ist eigenes ACK. Verworfen.\n", 
+                          receivedPacket.destinationAddress, receivedPacket.senderAddress);
         }
     }
-    
-    // Die tatsächliche Nutzlastlänge ist die verschlüsselte Länge minus der Padding-Bytes
-    size_t actualPayloadLen = encryptedLen - paddingByte;
 
-    // Optional: Überprüfen, ob die entschlüsselte Länge nicht die maximal erlaubte Klartextgröße überschreitet
-    if (actualPayloadLen > MAX_RAW_PAYLOAD_SIZE) {
-        Serial.print("Warnung: Entschlüsselte Klartextlänge (");
-        Serial.print(actualPayloadLen);
-        Serial.print(") überschreitet MAX_RAW_PAYLOAD_SIZE (");
-        Serial.print(MAX_RAW_PAYLOAD_SIZE);
-        Serial.println("). Daten könnten abgeschnitten werden.");
-        // Hier könntest du entscheiden, ob du einen Fehler zurückgibst (0) oder die abgeschnittenen Daten
-        // weitergibst. Für String-Konvertierung wird nur bis zum Null-Terminator gelesen.
-    }
-
-
-    return actualPayloadLen; // Gibt die tatsächliche Länge der Nutzlast zurück
+    return true; // Paket wurde (versucht zu) verarbeitet, Puffer kann zurückgesetzt werden
 }
 
-// Implementiert Byte-Stuffing nach dem DLE-Verfahren mit XOR-Maske
-size_t RS485SecureStack::_stuffBytes(const byte* input, size_t inputLen, byte* output) {
-    size_t outputIdx = 0;
-    for (size_t i = 0; i < inputLen; i++) {
-        // Wenn das Byte ein Steuerzeichen (START, END, ESCAPE) ist,
-        // füge das ESCAPE_BYTE und das XOR-Maskierte Originalbyte hinzu.
-        if (input[i] == START_BYTE || input[i] == END_BYTE || input[i] == ESCAPE_BYTE) {
-            // Prüfe auf Pufferüberlauf vor dem Hinzufügen von 2 Bytes
-            if (outputIdx + 1 >= SEND_BUFFER_SIZE) { 
-                Serial.println("Fehler: Stuffing Output Buffer Overflow beim Einfügen des Escape-Bytes!");
-                return 0; // Indiziere Fehler
-            }
-            output[outputIdx++] = ESCAPE_BYTE;
-            output[outputIdx++] = input[i] ^ ESCAPE_XOR_MASK;
+// Berechnet CRC16 über gegebene Daten
+uint16_t RS485SecureStack::_calculateCRC16(const uint8_t* data, size_t length) {
+    uint16_t crc = 0x0000; // Initialwert
+    for (size_t i = 0; i < length; ++i) {
+        crc = (crc >> 8) ^ crc16_table[(crc ^ data[i]) & 0xFF];
+    }
+    return crc;
+}
+
+// Generiert einen zufälligen Initialisierungsvektor (IV)
+void RS485SecureStack::_generateIV(uint8_t* iv) {
+    // Arduino random() ist nicht kryptographisch sicher, aber für PoC ausreichend.
+    // In Produktion: Hardware Random Number Generator (TRNG) des ESP32 verwenden!
+    for (size_t i = 0; i < RS485_IV_LENGTH; ++i) {
+        iv[i] = random(256);
+    }
+}
+
+// Verschlüsselt Daten mit AES-256 im CBC-Modus
+void RS458SecureStack::_encryptAES(uint8_t* data, size_t len, const uint8_t* key, const uint8_t* iv) {
+    AES256 aes256;
+    aes256.setKey(key, aes256.keySize());
+    aes256.setIV(iv, aes256.ivSize());
+    aes256.encryptCBC(data, len);
+}
+
+// Entschlüsselt Daten mit AES-256 im CBC-Modus
+void RS458SecureStack::_decryptAES(uint8_t* data, size_t len, const uint8_t* key, const uint8_t* iv) {
+    AES256 aes256;
+    aes256.setKey(key, aes256.keySize());
+    aes256.setIV(iv, aes256.ivSize());
+    aes256.decryptCBC(data, len);
+}
+
+// Berechnet HMAC-SHA256
+void RS485SecureStack::_calculateHMAC(const uint8_t* key, const uint8_t* data, size_t dataLen, uint8_t* hmacResult) {
+    uint8_t opad[64];
+    uint8_t ipad[64];
+    uint8_t tempKey[64]; // Für den Fall, dass der Schlüssel länger als 64 Bytes ist
+
+    // Key-Padding oder Hashing, falls der Schlüssel länger als der Blocksize ist
+    if (RS485_HMAC_LENGTH > 64) { // HMAC_LENGTH ist 32, SHA256 Blocksize ist 64. Also wird dieser Teil nicht erreicht.
+        SHA256 sha256_key_hash;
+        sha256_key_hash.reset();
+        sha256_key_hash.update(key, RS485_HMAC_LENGTH);
+        sha256_key_hash.finalize(tempKey, 32);
+        memset(tempKey + 32, 0, 32); // Pad mit Nullen
+    } else {
+        memcpy(tempKey, key, RS485_HMAC_LENGTH);
+        memset(tempKey + RS485_HMAC_LENGTH, 0, 64 - RS485_HMAC_LENGTH); // Pad mit Nullen
+    }
+
+    // opad und ipad XORen
+    for (int i = 0; i < 64; ++i) {
+        ipad[i] = tempKey[i] ^ 0x36;
+        opad[i] = tempKey[i] ^ 0x5C;
+    }
+
+    // Inner hash
+    SHA256 sha256_inner;
+    sha256_inner.reset();
+    sha256_inner.update(ipad, 64);
+    sha256_inner.update(data, dataLen);
+    uint8_t innerHash[32];
+    sha256_inner.finalize(innerHash, 32);
+
+    // Outer hash
+    SHA256 sha256_outer;
+    sha256_outer.reset();
+    sha256_outer.update(opad, 64);
+    sha256_outer.update(innerHash, 32);
+    sha256_outer.finalize(hmacResult, 32);
+}
+
+// Wendet Byte-Stuffing an (ersetzt Start- und Escape-Bytes)
+size_t RS485SecureStack::_byteStuff(const uint8_t* source, size_t sourceLen, uint8_t* destination) {
+    size_t destLen = 0;
+    for (size_t i = 0; i < sourceLen; ++i) {
+        if (source[i] == RS485_START_BYTE_0 || source[i] == RS485_START_BYTE_1 || source[i] == RS485_ESCAPE_BYTE) {
+            destination[destLen++] = RS485_ESCAPE_BYTE;
+            destination[destLen++] = source[i] ^ 0x20; // XOR mit 0x20 zum Escaping
         } else {
-            // Normale Bytes werden direkt kopiert.
-            if (outputIdx >= SEND_BUFFER_SIZE) { // Prüfe auf Pufferüberlauf
-                Serial.println("Fehler: Stuffing Output Buffer Overflow beim Kopieren eines Bytes!");
-                return 0; // Indiziere Fehler
-            }
-            output[outputIdx++] = input[i];
+            destination[destLen++] = source[i];
         }
     }
-    return outputIdx;
+    return destLen;
 }
 
-// Implementiert Byte-Unstuffing nach dem DLE-Verfahren mit XOR-Maske
-size_t RS485SecureStack::_unstuffBytes(const byte* input, size_t inputLen, byte* output) {
-    size_t outputIdx = 0;
-    bool escaped = false; // Flag, ob das letzte Byte ein ESCAPE_BYTE war
-
-    for (size_t i = 0; i < inputLen; i++) {
-        if (input[i] == ESCAPE_BYTE && !escaped) {
-            // ESCAPE_BYTE gefunden, und es war nicht selbst escaped.
-            // Das nächste Byte ist das eigentliche Datenbyte, das un-XORt werden muss.
-            escaped = true;
-        } else {
-            if (outputIdx >= MAX_LOGICAL_PACKET_SIZE) { // Prüfe auf Pufferüberlauf vor dem Schreiben
-                Serial.println("Fehler: Unstuffing Output Buffer Overflow!");
-                return 0; // Indiziere Fehler
-            }
-            if (escaped) {
-                // Wenn das vorherige Byte ein ESCAPE_BYTE war,
-                // un-XOR das aktuelle Byte, um den Originalwert zu erhalten.
-                output[outputIdx++] = input[i] ^ ESCAPE_XOR_MASK;
-                escaped = false; // Escape-Status zurücksetzen
+// Entfernt Byte-Stuffing
+size_t RS485SecureStack::_byteUnstuff(const uint8_t* source, size_t sourceLen, uint8_t* destination) {
+    size_t destLen = 0;
+    for (size_t i = 0; i < sourceLen; ++i) {
+        if (source[i] == RS485_ESCAPE_BYTE) {
+            if (i + 1 < sourceLen) {
+                destination[destLen++] = source[++i] ^ 0x20;
             } else {
-                // Normales Byte (nicht escaped).
-                output[outputIdx++] = input[i];
+                if (_debug) Serial.println("ERR: Unvollständige Escape-Sequenz.");
+                return 0; // Fehler: Unvollständige Escape-Sequenz
+            }
+        } else {
+            destination[destLen++] = source[i];
+        }
+    }
+    return destLen;
+}
+
+// Sendet eine ACK-Nachricht
+bool RS485SecureStack::_sendAck(uint8_t destinationAddress, uint8_t senderAddress, uint8_t keyId) {
+    if (_debug) Serial.printf("DBG: Sende ACK an %d\n", destinationAddress);
+    return sendMessage(destinationAddress, senderAddress, MSG_TYPE_ACK_NACK, "ACK", false); // ACK selbst erfordert kein ACK
+}
+
+// Sendet eine NACK-Nachricht
+bool RS485SecureStack::_sendNack(uint8_t destinationAddress, uint8_t senderAddress, uint8_t keyId, const char* reason) {
+    if (_debug) Serial.printf("DBG: Sende NACK an %d, Grund: %s\n", destinationAddress, reason);
+    String payload = "NACK:";
+    payload += reason;
+    return sendMessage(destinationAddress, senderAddress, MSG_TYPE_ACK_NACK, payload, false); // NACK selbst erfordert kein ACK
+}
+
+// Wartet auf ein ACK/NACK
+bool RS485SecureStack::_waitForAck(long timeoutMs) {
+    unsigned long startTime = millis();
+    _resetReceiveBuffer(); // Puffer für ACK leeren
+
+    while (millis() - startTime < timeoutMs) {
+        if (_serial->available()) {
+            uint8_t incomingByte = _serial->read();
+
+            if (_receiveBufferPos == 0) { // Suchen nach Startbytes
+                if (incomingByte == RS485_START_BYTE_0) {
+                    _receiveBuffer[_receiveBufferPos++] = incomingByte;
+                }
+            } else if (_receiveBufferPos == 1) {
+                if (incomingByte == RS485_START_BYTE_1) {
+                    _receiveBuffer[_receiveBufferPos++] = incomingByte;
+                } else {
+                    _resetReceiveBuffer();
+                }
+            } else {
+                if (incomingByte == RS485_START_BYTE_0 || incomingByte == RS485_START_BYTE_1) {
+                    _resetReceiveBuffer();
+                    if (incomingByte == RS485_START_BYTE_0) { 
+                         _receiveBuffer[_receiveBufferPos++] = incomingByte;
+                    }
+                    continue; 
+                }
+                _receiveBuffer[_receiveBufferPos++] = incomingByte;
+
+                if (_receiveBufferPos >= TOTAL_LENGTH_INDEX + 1) {
+                    uint8_t totalLength = _receiveBuffer[TOTAL_LENGTH_INDEX];
+                    if (totalLength < (8 + RS485_IV_LENGTH + RS485_HMAC_LENGTH + 2) || totalLength > MAX_PACKET_SIZE) {
+                        _resetReceiveBuffer();
+                        continue;
+                    }
+
+                    if (_receiveBufferPos >= totalLength + 2) { // +2 für Startbytes
+                        // Versuche das Paket zu extrahieren und zu verarbeiten
+                        size_t unstuffedLength = _byteUnstuff(_receiveBuffer, _receiveBufferPos, _unstuffedPacketBuffer);
+
+                        if (unstuffedLength < (8 + RS485_IV_LENGTH + RS485_HMAC_LENGTH + 2)) {
+                            _resetReceiveBuffer();
+                            continue;
+                        }
+
+                        if (_unstuffedPacketBuffer[START_BYTE_0_INDEX] != RS485_START_BYTE_0 ||
+                            _unstuffedPacketBuffer[START_BYTE_1_INDEX] != RS485_START_BYTE_1 ||
+                            _unstuffedPacketBuffer[PROTOCOL_VERSION_INDEX] != RS485_PROTOCOL_VERSION) {
+                            _resetReceiveBuffer();
+                            continue;
+                        }
+                        
+                        if (_unstuffedPacketBuffer[TOTAL_LENGTH_INDEX] != unstuffedLength) {
+                            _resetReceiveBuffer();
+                            continue;
+                        }
+
+                        uint16_t receivedCrc = (_unstuffedPacketBuffer[unstuffedLength - 2] | (_unstuffedPacketBuffer[unstuffedLength - 1] << 8));
+                        uint16_t calculatedCrc = _calculateCRC16(_unstuffedPacketBuffer, unstuffedLength - 2);
+
+                        if (receivedCrc != calculatedCrc) {
+                            if (_debug) Serial.println("ERR: ACK/NACK CRC16 Fehler.");
+                            _resetReceiveBuffer();
+                            continue;
+                        }
+
+                        uint8_t keyId = _unstuffedPacketBuffer[KEY_ID_INDEX];
+                        if (keyId >= 256) {
+                            if (_debug) Serial.printf("ERR: Ungültige Key ID (%d) im ACK/NACK Header.\n", keyId);
+                            _resetReceiveBuffer();
+                            continue;
+                        }
+
+                        uint8_t receivedHmac[RS485_HMAC_LENGTH];
+                        memcpy(receivedHmac, &_unstuffedPacketBuffer[unstuffedLength - RS485_HMAC_LENGTH - 2], RS485_HMAC_LENGTH);
+
+                        uint8_t calculatedHmac[RS485_HMAC_LENGTH];
+                        _calculateHMAC(_sessionKeys[keyId], _unstuffedPacketBuffer, unstuffedLength - RS485_HMAC_LENGTH - 2, calculatedHmac);
+
+                        bool hmacVerified = true;
+                        for (size_t i = 0; i < RS485_HMAC_LENGTH; ++i) {
+                            if (receivedHmac[i] != calculatedHmac[i]) {
+                                hmacVerified = false;
+                                break;
+                            }
+                        }
+
+                        if (!hmacVerified) {
+                            if (_debug) Serial.println("ERR: ACK/NACK HMAC-Fehler. Nicht authentifiziert.");
+                            _resetReceiveBuffer();
+                            continue;
+                        }
+
+                        // Entschlüsseln (auch wenn es ein ACK ist, könnte es eine Payload haben, z.B. NACK Reason)
+                        uint8_t iv[RS485_IV_LENGTH];
+                        memcpy(iv, &_unstuffedPacketBuffer[8], RS485_IV_LENGTH);
+                        size_t encryptedPayloadStart = 8 + RS485_IV_LENGTH;
+                        size_t encryptedPayloadLen = unstuffedLength - encryptedPayloadStart - RS485_HMAC_LENGTH - 2;
+
+                        uint8_t decryptedPayloadBuffer[encryptedPayloadLen];
+                        memcpy(decryptedPayloadBuffer, &_unstuffedPacketBuffer[encryptedPayloadStart], encryptedPayloadLen);
+                        _decryptAES(decryptedPayloadBuffer, encryptedPayloadLen, _sessionKeys[keyId], iv);
+                        
+                        // Überprüfen, ob es ein ACK/NACK für UNS ist und vom erwarteten Sender kommt
+                        if ((char)_unstuffedPacketBuffer[MESSAGE_TYPE_INDEX] == MSG_TYPE_ACK_NACK &&
+                            _unstuffedPacketBuffer[DEST_ADDRESS_INDEX] == _myAddress && // Es ist für mich
+                            _unstuffedPacketBuffer[SENDER_ADDRESS_INDEX] == destinationAddress) // Und vom Empfänger der Originalnachricht
+                        {
+                            String ackPayload = String((char*)decryptedPayloadBuffer);
+                            _resetReceiveBuffer();
+                            if (ackPayload.startsWith("ACK")) {
+                                if (_debug) Serial.println("DBG: ACK empfangen.");
+                                return true;
+                            } else if (ackPayload.startsWith("NACK")) {
+                                if (_debug) Serial.printf("DBG: NACK empfangen: %s\n", ackPayload.c_str());
+                                return false; // NACK bedeutet Fehler
+                            }
+                        } else {
+                            if (_debug) Serial.println("DBG: Empfangenes Paket ist kein passendes ACK/NACK.");
+                            // Dies ist kein ACK/NACK für uns, verarbeiten es als normales Paket in der Haupt-Loop.
+                            // Temporär zurück in den Puffer legen und Haupt-Loop verarbeiten lassen
+                            _resetReceiveBuffer(); // Puffer leeren
+                            // Dieses Verhalten ist kompliziert, wenn man im _waitForAck_ ist.
+                            // Die einfachste Lösung ist, es zu verwerfen und davon auszugehen, dass _waitForAck_ nur auf das spezielle ACK/NACK achtet.
+                            // Andere Pakete werden von der Haupt-Loop abgeholt.
+                        }
+                    }
+                }
+            }
+             if (_receiveBufferPos >= (MAX_PACKET_SIZE * 2) -1) { // Pufferüberlauf verhindern
+                if (_debug) Serial.println("DBG: ACK/NACK receive buffer overflow. Resetting.");
+                _resetReceiveBuffer();
             }
         }
     }
-    // Wenn am Ende noch ein "escaped" Zustand übrig ist, bedeutet das ein unvollständiges Escape-Sequenz
-    if (escaped) {
-        Serial.println("Fehler: Unvollständige Escape-Sequenz am Ende des Puffers beim Unstuffing.");
-        return 0;
-    }
-    return outputIdx;
-}
-
-// Setzt das Flag, ob ACKs/NACKs gesendet werden sollen
-void RS485SecureStack::setAckEnabled(bool enabled) {
-    _ackEnabled = enabled;
-}
-
-// Setzt den aktuell aktiven Session Key basierend auf der Key ID
-void RS485SecureStack::setCurrentKeyId(uint16_t keyId) {
-    _currentSessionKeyId = keyId;
-    if (keyId < MAX_SESSION_KEYS) {
-         // Kopiere den gewählten Schlüssel aus dem Pool in den _currentSessionKey Puffer
-         memcpy(_currentSessionKey, _sessionKeyPool[keyId], AES_KEY_SIZE);
-         Serial.print("Aktiver Session Key auf ID ");
-         Serial.print(keyId);
-         Serial.println(" gesetzt.");
-    } else {
-        Serial.print("Warnung: Versuch, unbekannte Key ID (");
-        Serial.print(keyId);
-        Serial.println(") zu setzen. Aktiver Schlüssel bleibt unverändert.");
-        // Optional: Auf einen Standard-Fallback-Schlüssel setzen oder Fehler signalisieren
-    }
-}
-
-// Speichert einen Session Key im Pool unter einer bestimmten ID
-void RS485SecureStack::setSessionKey(uint16_t keyId, const byte sessionKey[AES_KEY_SIZE]) {
-    if (keyId < MAX_SESSION_KEYS) {
-        memcpy(_sessionKeyPool[keyId], sessionKey, AES_KEY_SIZE);
-        Serial.print("Session Key für ID ");
-        Serial.print(keyId);
-        Serial.println(" im Pool aktualisiert.");
-    } else {
-        Serial.print("Warnung: Session Key Pool zu klein (MAX_SESSION_KEYS=");
-        Serial.print(MAX_SESSION_KEYS);
-        Serial.print(") für diese ID (");
-        Serial.print(keyId);
-        Serial.println(") oder ID ungültig.");
-    }
-}
-
-// NEU: Setzt den KeyRotationManager
-void RS485SecureStack::setKeyRotationManager(KeyRotationManager* manager) {
-    _keyRotationManager = manager;
+    if (_debug) Serial.println("DBG: ACK/NACK Timeout.");
+    return false; // Timeout
 }
