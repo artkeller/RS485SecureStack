@@ -203,28 +203,41 @@ Für den Aufbau der vollständigen `RS485SecureCom`-Applikation benötigen Sie f
 
 ## 🔌 Verdrahtungshinweise (Allgemein)
 
-Die `RS485SecureCom`-Applikation nutzt den **Halbduplex-Betrieb** des RS485-Busses, da die verwendeten HW-159 Transceiver-Module diese Betriebsart effizient unterstützen. Diese Konfiguration ist besonders einfach zu verkabeln und erfordert, dass die Richtung des Datenflusses über einen dedizierten GPIO-Pin (DE/RE) gesteuert wird.
+Die `RS485SecureCom`-Applikation nutzt den **Halbduplex-Betrieb** des RS485-Busses. Dies bedeutet, dass ein Transceiver zu einem Zeitpunkt entweder senden *oder* empfangen kann, aber nicht beides gleichzeitig.
 
-Für jeden ESP32 (C3 und S3) mit einem MAX485 Transceiver Modul sollten die Verbindungen wie folgt hergestellt werden:
+Je nach Variante Ihres RS485-Transceiver-Moduls (z.B. HW-159 oder ähnliche MAX485-basierte Module) gibt es zwei gängige Methoden, wie die Flussrichtung gesteuert wird:
+
+1.  **Manuelle Steuerung mittels eines DE/RE-Pins (häufig bei einfachen Modulen):**
+    * Viele RS485-Module, die auf dem MAX485-Chip basieren, führen dessen DE (Driver Enable) und RE (Receiver Enable) Pins als einen einzigen Pin (oft gebrückt) nach außen.
+    * **Diese Module erfordern eine externe Steuerung durch den Mikrocontroller.** Ein GPIO-Pin des ESP32 muss diesen DE/RE-Pin aktiv auf `HIGH` setzen, bevor Daten gesendet werden, und auf `LOW` setzen, nachdem die Datenübertragung abgeschlossen ist, um in den Empfangsmodus zu wechseln.
+    * Die Beispiel-Sketches in diesem Projekt (z.B. `scheduler_main_esp32.ino`) sind für diesen Fall ausgelegt und verwenden die `manageDERE(true/false)`-Funktion, um diese Steuerung zu demonstrieren.
+
+2.  **Automatische Flussrichtungssteuerung (bei Modulen mit integrierter Logik):**
+    * Einige RS485-Module (wie von Ihnen beschrieben für Ihr spezifisches HW-159 Modul oder ähnlich dem HW-519) verfügen über **zusätzliche Hardware-Logik auf der Platine**, die die DE/RE-Pins des MAX485-Chips intern steuert.
+    * Diese Module überwachen das TX-Signal des Mikrocontrollers. Sobald der Mikrocontroller Daten über seine TX-Leitung sendet, erkennt die Modul-Hardware dies und schaltet den MAX485 automatisch in den Sendezustand. Wenn die TX-Leitung inaktiv ist, schaltet das Modul automatisch in den Empfangsmodus zurück.
+    * **Für solche Module ist KEIN separater GPIO-Pin vom Mikrocontroller für die DE/RE-Steuerung erforderlich.** Das Modul wird dann typischerweise nur über GND, VCC, RX (vom Modul zum MCU) und TX (vom MCU zum Modul) mit dem Mikrocontroller verbunden, zusätzlich zu den RS485-Bus-Leitungen A und B.
+    * Wenn Ihr HW-159 Modul dieser Beschreibung entspricht (nur 4 Pins für die TTL-Seite: VCC, GND, RX, TX), dann ist die `manageDERE()`-Funktion in den Beispiel-Sketches **nicht notwendig** und sollte deaktiviert oder entfernt werden, da die Hardware diese Funktion bereits übernimmt.
+
+**Unabhängig von der Steuerungsmethode sollten die grundlegenden Verbindungen wie folgt hergestellt werden:**
 
 * **ESP32 TX** an **MAX485 DI** (Driver Input)
 * **ESP32 RX** an **MAX485 RO** (Receiver Output)
-* **ESP32 GPIO (DE/RE)** an **MAX485 DE & RE** (Driver Enable & Receiver Enable, oft gebrückt auf dem Modul)
-    * Dieser GPIO-Pin muss im Sketch entsprechend gesetzt werden: `HIGH` für den Sendezustand (Driver Enable) und `LOW` für den Empfangszustand (Receiver Enable).
-    * **Wichtiger Hinweis:** Die `RS485SecureStack`-Bibliothek selbst übernimmt die Steuerung dieses Pins nicht direkt. Es obliegt dem Anwendungs-Sketch (wie in den `examples` gezeigt), den DE/RE-Pin über die Funktion `manageDERE(true)` (für Senden) und `manageDERE(false)` (für Empfangen) zu steuern.
-    * Für reine Lauschtests (z.B. mit dem Bus-Monitor) kann der Pin fest auf `LOW` belassen werden. Für Nodes, die aktiv senden (Master, Submaster, Clients), ist die korrekte Steuerung dieses Pins jedoch unerlässlich!
+* **[Optional, nur für Module ohne automatische Steuerung] ESP32 GPIO (DE/RE)** an **MAX485 DE & RE** (Driver Enable & Receiver Enable, oft gebrückt auf dem Modul)
+    * Dieser GPIO-Pin muss im Sketch entsprechend gesetzt werden: `HIGH` für den Sendezustand und `LOW` für den Empfangszustand.
+    * Für reine Lauschtests (z.B. mit dem Bus-Monitor) kann der Pin fest auf `LOW` belassen werden, da in diesem Fall keine Sendeoperationen durchgeführt werden. Für Nodes, die aktiv am Bus senden, ist die korrekte und zeitgerechte Steuerung dieses Pins jedoch unerlässlich!
 * **MAX485 VCC** an **ESP32 3.3V**
 * **MAX485 GND** an **ESP32 GND**
 * **MAX485 A** an **RS485 Bus A**
 * **MAX485 B** an **RS485 Bus B**
 
 Alle "A"-Pins der MAX485 Module werden miteinander verbunden, ebenso alle "B"-Pins.
-Die empfohlene Topologie für den RS485-Bus ist eine **durchgehende Linie (Daisy-Chain)**. Eine Stern-Topologie sollte vermieden werden, um Signalreflexionen und damit verbundene Kommunikationsprobleme zu minimieren.
+Die empfohlene Topologie für den RS485-Bus ist eine **durchgehende Linie (Daisy-Chain)**, bei der die Nodes sequenziell an das Hauptkabel angeschlossen sind. Eine Stern-Topologie sollte vermieden werden, um Signalreflexionen und damit verbundene Kommunikationsprobleme zu minimieren.
 
-Für detailliertere Informationen zur RS485-Verkabelung und empfohlenen Topologien, konsultieren Sie bitte die folgenden Ressourcen:
+Für detailliertere Informationen zur RS485-Verkabelung, Buseigenschaften und empfohlenen Topologien, konsultieren Sie bitte die folgenden Ressourcen:
 
 * [Renesas, White Paper: Schnittstellen für Industrie-PCs vereinfachen](https://www.renesas.com/en/document/whp/schnittstellen-f-r-industrie-pcs-vereinfachen#:~:text=RS%2D485%20unterst%C3%BCtzt%20Leitungsl%C3%A4ngen%20bis,in%20Bild%204%20dargestellt%20ist.)
 * [Renesas, Application Note, RS-485 Design Guide](https://www.renesas.com/en/document/apn/rs-485-design-guide-application-note#:~:text=Suggested%20Network%20Topology,-RS%2D485%20is&text=RS%2D485%20supports%20several%20topologies,each%20with%20a%20unique%20address.)
+
 
 
 ## 🚀 Erste Schritte
