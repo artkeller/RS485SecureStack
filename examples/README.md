@@ -152,6 +152,8 @@ Der Inhalt des `Encrypted Payload` hängt stark vom `MessageType` ab. Die Payloa
         Der `sessionKey` ist hierbei vom Master mit dem `MASTER_KEY` verschlüsselt, bevor er in den Payload gepackt wird.
     * **Verantwortlichkeit:** Nur der Scheduler sendet dies. Empfangende Nodes entschlüsseln den Session Key mit ihrem `MASTER_KEY`, speichern ihn unter der neuen `keyID` und verwenden ihn fortan für die Kommunikation. Eine ACK-Nachricht ist erforderlich.
 
+      **⚠️ Disclaimer:** Diese Implementierung darf nur im PoC eingesetzt werden. In einer Folgebversion wird für die Produktion der `RS485SecureStack`-Bibliotheken das Update des `sessionKey` mittels Diffie-Hellman (DH) abgesichert.
+
 4.  **`MSG_TYPE_DATA` (`'D'`):**
     * **Payload-Inhalt:** Variabel, je nach Anwendungsfall. Kann einfache Statusanfragen, Befehle oder übertragene Sensordaten sein.
     * **Beispiele:**
