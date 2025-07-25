@@ -17,39 +17,39 @@ Die `RS485SecureCom`-Applikation besteht aus mehreren spezialisierten Nodes, die
 
 ### Topologie
 
-        +----------------+                       +----------------+
-        |    Scheduler   | Master (Address 0)    |                |
-        |  ESP32-C3 Dev. |<----------    ------->|   RS485 Bus    |
-        |     (UART0)    |                       |  (Twisted Pair)|
-        +----------------+                       +----------------+
-                |                                       |
-                |                                       |
-                V                                       V
-        +----------------+                       +----------------+
-        |    Submaster 1 | (Address 1)           |    Submaster 2 | (Address 2)
-        |  ESP32-C3 Dev. |<--------------------->|  ESP32-C3 Dev. |
-        |     (UART0)    |                       |     (UART0)    |
-        +----------------+                       +----------------+
-                |                                       |
-                |                                       |
-                V                                       V
-        +----------------+                       +----------------+
-        |    Client 11   | (Address 11)          |    Client 12   | (Address 12)
-        |  ESP32-C3 Dev. |<--------------------->|  ESP32-C3 Dev. |
-        |     (UART0)    |                       |     (UART0)    |
-        +----------------+                       +----------------+
-                                                         |        
-                                                         V
-                                                 +----------------+
-                                                 |   Bus-Monitor  | (Address 254)
-                                                 | LilyGo T-Disp. S3|
-                                                 |  (TFT + UART0) |
-                                                 +----------------+
++----------------+                   +----------------+
+|    Scheduler   | Master (Address 0)|                |
+|  ESP32-C3 Dev. |<----------------->|   RS485 Bus    |
+|     (UART0)    |                   |  (Twisted Pair)|
++----------------+                   +----------------+
+|                                       |
+|                                       |
+V                                       V
++----------------+                       +----------------+
+|    Submaster 1 | (Address 1)           |    Submaster 2 | (Address 2)
+|  ESP32-C3 Dev. |<--------------------->|  ESP32-C3 Dev. |
+|     (UART0)    |                       |     (UART0)    |
++----------------+                       +----------------+
+|                                       |
+|                                       |
+V                                       V
++----------------+                       +----------------+
+|    Client 11   | (Address 11)          |    Client 12   | (Address 12)
+|  ESP32-C3 Dev. |<--------------------->|  ESP32-C3 Dev. |
+|     (UART0)    |                       |     (UART0)    |
++----------------+                       +----------------+
+|
+V
++----------------+
+|   Bus-Monitor  | (Address 254)
+| LilyGo T-Disp. S3|
+|  (TFT + UART0) |
++----------------+
 
 
 *(Hinweis: Die Pfeile auf dem RS485 Bus symbolisieren bidirektionale Kommunikation. Jeder Node ist über einen RS485 Transceiver mit dem Bus verbunden.)*
 
-## ⚙️ Komponenten und deren Rollen 
+## ⚙️ Komponenten und deren Rollen
 
 Die `RS485SecureCom`-Applikation besteht aus den folgenden Kern-Sketches, die jeweils eine spezifische Rolle im RS485-Netzwerk einnehmen:
 
@@ -109,6 +109,80 @@ Die `RS485SecureCom`-Applikation besteht aus den folgenden Kern-Sketches, die je
     * Führt Metriken wie `packetsPerSecond`, `bytesPerSecond`, `totalChecksumErrors`, `totalHmacErrors` usw.
     * Implementiert mehrere Anzeigemodi (`MODE_SIMPLE_DASHBOARD`, `MODE_TRAFFIC_ANALYSIS`, `MODE_DEBUG_TRACE`) für das TFT-Display, die über serielle Eingaben gewechselt werden können.
     * LVGL-Integration: Nutzt die LVGL-Bibliothek für eine moderne und interaktive Benutzeroberfläche auf dem TFT-Display, anstelle von direkten Textausgaben.
+
+## 📦 Anwendungs-Protokoll der `RS485SecureCom` Applikation
+
+Die `RS485SecureCom`-Applikation baut auf dem grundlegenden Datagramm-Format des `RS485SecureStack` auf. Details zum Aufbau des Datagramms auf Byte-Ebene (Header, IV, Payload, HMAC, Byte-Stuffing etc.) finden Sie in der [zentralen `README.md`](../README.md) im Root-Verzeichnis dieses Projekts unter dem Abschnitt "RS485SecureStack: Protokoll-Spezifikation (Datagramm-Format)".
+
+Dieses Kapitel beschreibt, wie die `RS485SecureCom`-Applikation die `MessageType` und den `Encrypted Payload` des Datagramms nutzt, um die spezifischen Kommunikationsbedürfnisse des Netzwerks zu erfüllen.
+
+### `MessageType` (1 Byte im Datagramm-Header)
+
+Der `MessageType` ist ein einzelnes Zeichen (`char`), das den Typ der Nachricht auf Anwendungsebene definiert. Dies ermöglicht den Nodes, Pakete je nach ihrem Inhalt und Zweck unterschiedlich zu verarbeiten. Die `RS485SecureCom`-Applikation definiert die folgenden Nachrichtentypen:
+
+| `MessageType` (char) | Beschreibung                      | Sender (primär)        | Empfänger (primär)   | Zuverlässigkeit (ACK/NACK) | Nutzungszweck in `RS485SecureCom`                 |
+| :------------------- | :-------------------------------- | :--------------------- | :------------------- | :------------------------- | :------------------------------------------------ |
+| `'H'`                | **Heartbeat** | Master (Scheduler)     | Alle (Broadcast)     | Optional                   | Master-Präsenzanzeige, Rogue-Master-Erkennung     |
+| `'B'`                | **Baud Rate Set** | Master (Scheduler)     | Alle (Broadcast)     | Erforderlich               | Dynamische Anpassung der Bus-Geschwindigkeit      |
+| `'K'`                | **Key Update** | Master (Scheduler)     | Alle (Broadcast)     | Erforderlich               | Verteilung neuer Session Keys (Rekeying)          |
+| `'D'`                | **Data/Command** | Master, Submaster, Client | Master, Submaster, Client | Optional/Erforderlich      | Nutzdaten, Steuerbefehle, Statusabfragen, Sendeerlaubnis |
+| `'A'`                | **ACK/NACK (Acknowledgement)** | Alle (Unicast)         | Sender der Originalnachricht | Nicht zutreffend           | Bestätigung oder Ablehnung eines empfangenen Pakets |
+
+### `Encrypted Payload` (Inhalt und Format)
+
+Der Inhalt des `Encrypted Payload` hängt stark vom `MessageType` ab. Die Payloads sind in der Regel einfache Zeichenketten (Strings) oder bei Bedarf JSON-formatierte Strings für komplexere Daten.
+
+#### Details pro `MessageType`:
+
+1.  **`MSG_TYPE_MASTER_HEARTBEAT` (`'H'`):**
+    * **Payload-Inhalt:** Typischerweise leer oder enthält eine kurze Statusinformation des Masters (z.B. Uptime, aktuelle Baudrate).
+    * **Beispiel:** `"OK"` oder `""`
+    * **Verantwortlichkeit:** Der Scheduler sendet dies periodisch, um seine Lebensfähigkeit zu demonstrieren. Andere Nodes prüfen auf diesen Heartbeat, um die Master-Präsenz zu bestätigen. Der Bus-Monitor zeigt dessen Empfang und die Absenderadresse an.
+
+2.  **`MSG_TYPE_BAUD_RATE_SET` (`'B'`):**
+    * **Payload-Inhalt:** Die neue Baudrate als ASCII-String (z.B. `"115200"`, `"57600"`).
+    * **Beispiel:** `"115200"`
+    * **Verantwortlichkeit:** Nur der Scheduler sendet diesen Typ. Alle empfangenden Nodes müssen ihre UART-Baudrate auf den angegebenen Wert umstellen und eine ACK-Nachricht zurücksenden.
+
+3.  **`MSG_TYPE_KEY_UPDATE` (`'K'`):**
+    * **Payload-Inhalt:** Eine JSON-Struktur, die die neue `keyID` und den verschlüsselten `sessionKey` enthält.
+        ```json
+        {"keyID":123,"sessionKey":"base64_encoded_encrypted_key"}
+        ```
+        Der `sessionKey` ist hierbei vom Master mit dem `MASTER_KEY` verschlüsselt, bevor er in den Payload gepackt wird.
+    * **Verantwortlichkeit:** Nur der Scheduler sendet dies. Empfangende Nodes entschlüsseln den Session Key mit ihrem `MASTER_KEY`, speichern ihn unter der neuen `keyID` und verwenden ihn fortan für die Kommunikation. Eine ACK-Nachricht ist erforderlich.
+
+4.  **`MSG_TYPE_DATA` (`'D'`):**
+    * **Payload-Inhalt:** Variabel, je nach Anwendungsfall. Kann einfache Statusanfragen, Befehle oder übertragene Sensordaten sein.
+    * **Beispiele:**
+        * **Permission-to-Send (vom Master an Submaster):** `"PERMISSION_TO_SEND"`
+        * **Statusabfrage (vom Submaster an Client):** `"GET_STATUS"`
+        * **Statusantwort (vom Client an Submaster/Master):** `"STATUS_OK:25C,70%"`, oder JSON-formatiert `{"temp":25.5,"hum":70.2}`
+        * **Befehl (vom Submaster an Client):** `"SET_LED:ON"`
+    * **Verantwortlichkeit:** Dieser Typ wird von allen Nodes für die allgemeine Datenkommunikation verwendet. Der Master kann Sendeerlaubnis vergeben, Submaster können Clients befragen/steuern, und Clients antworten.
+
+5.  **`MSG_TYPE_ACK_NACK` (`'A'`):**
+    * **Payload-Inhalt:** Typischerweise leer für ACK, oder ein Fehlercode/eine kurze Beschreibung für NACK (z.B. `"NACK:BAD_CRC"`, `"NACK:UNKNOWN_CMD"`).
+    * **Beispiel:** `""` (für ACK), `"ERROR_PROCESSING_PAYLOAD"` (für NACK)
+    * **Verantwortlichkeit:** Wird als Antwort auf Nachrichten gesendet, die eine Bestätigung erfordern (z.B. `BaudRateSet`, `KeyUpdate`). Sie dient der Bestätigung des Empfangs und der korrekten Verarbeitung.
+
+### Kommunikationsflüsse und Verantwortlichkeiten
+
+Die Kombination aus `MessageType` und Payload definiert die komplexen Interaktionen innerhalb der `RS485SecureCom`-Applikation:
+
+* **Master-Initiierte Abläufe:**
+    * **Baudraten-Management:** Master sendet `'B'` mit neuer Rate. Alle antworten mit `'A'`.
+    * **Key-Management:** Master sendet `'K'` mit neuem Schlüssel. Alle antworten mit `'A'`.
+    * **Sendeerlaubnis:** Master sendet `'D'` (Payload "PERMISSION_TO_SEND") an einen spezifischen Submaster. Der Submaster erhält daraufhin das Senderecht.
+* **Submaster-Initiierte Abläufe:**
+    * Nach Erhalt der Sendeerlaubnis: Submaster sendet `'D'` (Payload "GET_STATUS" oder Befehl) an seine Clients.
+* **Client-Reaktionen:**
+    * Client empfängt `'D'` von Master/Submaster und antwortet mit `'D'` (Payload "STATUS_OK" oder Ergebnis des Befehls).
+* **Fehlerbehandlung:** Wenn ein Paket nicht entschlüsselt oder der HMAC nicht verifiziert werden kann, wird es stillschweigend verworfen (Bibliotheksverhalten). Wenn ein Paket zwar korrekt entschlüsselt, aber der Inhalt auf Anwendungsebene nicht verarbeitet werden kann, kann eine NACK-Antwort gesendet werden.
+
+Diese anwendungsspezifische Protokollbeschreibung ist entscheidend für Entwickler, die eigene Anwendungen mit dem `RS485SecureStack` erstellen oder die Funktionsweise der `RS485SecureCom`-Beispiele detailliert verstehen möchten.
+
+---
 
 ## 🛠️ Bill of Materials (BOM) für die Applikation
 
@@ -173,7 +247,7 @@ Für jeden Sketch, den Sie verwenden möchten:
 2.  **Inbetriebnahme-Reihenfolge:**
     * Starten Sie zuerst den **Scheduler (Master)**. Er beginnt mit der Bus-Initialisierung und Baudraten-Einmessung.
     * Schalten Sie anschließend die **Submaster** und **Clients** ein. Sie sollten die Baudraten-Anweisungen des Masters empfangen und sich anpassen.
-    * Zum Schluss schalten Sie den **Bus-Monitor** ein. Er sollte automatisch die Baudrate des Busses erkennen und den Verkehr anzeigen.
+    * Zum Schluss schalten Sie den **Bus-Monitor** ein. Er sollte automatisch die Baudrate des Busses erkennen und beginnen, den Verkehr anzuzeigen.
 
 ## 🏃 Betriebsszenarien der `RS485SecureCom` Applikation
 
@@ -194,7 +268,7 @@ Die Applikation ist darauf ausgelegt, verschiedene Betriebsszenarien zu demonstr
 3.  **Dynamisches Rekeying**
     * Nach einer vordefinierten Zeit oder bei Bedarf (triggerbar über serielle Eingabe am Scheduler) initiiert der **Scheduler** einen Rekeying-Prozess.
     * Er generiert eine neue Session Key ID und den entsprechenden neuen Session Key, den er sicher (`MSG_TYPE_KEY_UPDATE`, `'K'`) an alle teilnehmenden Nodes verteilt.
-    * Alle Nodes wechseln zur neuen Key ID und verwenden den neuen Schlüssel für die nachfolgende Kommunikation.
+    * Alle Nodes wechseln zur neuen Key ID und verwenden den neuen Schlüssel fortan für die Kommunikation.
     * Der **Bus-Monitor** zeigt den Wechsel der Key ID an und verifiziert, dass die Kommunikation mit dem neuen Schlüssel erfolgreich entschlüsselt wird, was die Effektivität des dynamischen Rekeyings demonstriert.
 
 4.  **Fehlerfall: Baudrate verschlechtert sich**
@@ -217,6 +291,15 @@ Die Applikation ist darauf ausgelegt, verschiedene Betriebsszenarien zu demonstr
     * Der **Bus-Monitor** (im Debug-Modus) kann die empfangenen Pakete protokollieren, aber mit dem expliziten Hinweis "HMAC_OK: NO", was die erfolgreiche Abwehr der Manipulation demonstriert und die Datenintegrität des Systems gewährleistet.
 
 Diese Szenarien verdeutlichen die umfassenden Fähigkeiten der `RS485SecureCom`-Applikation, ein sicheres, zuverlässiges und intelligent verwaltetes RS485-Netzwerk zu betreiben.
+
+## ⚠️ Disclaimer für Anwendungsbeispiele
+
+Diese Beispiele sind **ausschließlich für Proof-of-Concepts (PoCs)**, Evaluierungen und Entwicklungszwecke in kontrollierten Umgebungen gedacht. Sie dienen der Demonstration der Machbarkeit und der Sicherheitskonzepte des `RS485SecureStack`.
+
+**Diese Software ist NICHT für den Produktionseinsatz geeignet.** Für den Einsatz in einer Produktionsumgebung ist das **sichere Provisioning und der Schutz des Master Authentication Key (MAK)** von entscheidender Bedeutung. Derzeit ist der MAK im Quellcode hinterlegt. Implementierungen für Secure-Boot, Flash-Verschlüsselung und Hardware-Security-Module, die für einen produktiven Einsatz notwendig wären, sind in diesen Beispielen nicht enthalten.
+
+Die Autoren übernehmen keine Haftung für Schäden oder Verluste, die durch die Verwendung dieser Software entstehen. Die Nutzung erfolgt auf eigenes Risiko.
+
 
 ## ⚠️ Disclaimer für Anwendungsbeispiele
 
