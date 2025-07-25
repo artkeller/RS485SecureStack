@@ -223,8 +223,10 @@ Für jeden ESP32 (C3 und S3):
 Alle "A"-Pins der MAX485 Module werden miteinander verbunden, ebenso alle "B"-Pins.
 Der RS485-Bus sollte als eine durchgehende Linie (Daisy-Chain) und nicht als Stern-Topologie verdrahtet werden.
 
-Eine gute Informationsquelle ist z. B. [Renesa, White Paper: Schnittstellen für Industrie-PCs vereinfachen
-D](https://www.renesas.com/en/document/whp/schnittstellen-f-r-industrie-pcs-vereinfachen#:~:text=RS%2D485%20unterst%C3%BCtzt%20Leitungsl%C3%A4ngen%20bis,in%20Bild%204%20dargestellt%20ist.)
+Gute Informationsquellen zum Themankomplex Verkabelung sind u. a.:
+
+* [Renesas, White Paper: Schnittstellen für Industrie-PCs vereinfachen](https://www.renesas.com/en/document/whp/schnittstellen-f-r-industrie-pcs-vereinfachen#:~:text=RS%2D485%20unterst%C3%BCtzt%20Leitungsl%C3%A4ngen%20bis,in%20Bild%204%20dargestellt%20ist.)
+* [Renesas, Application Note, RS-485 Design Guide](https://www.renesas.com/en/document/apn/rs-485-design-guide-application-note#:~:text=Suggested%20Network%20Topology,-RS%2D485%20is&text=RS%2D485%20supports%20several%20topologies,each%20with%20a%20unique%20address.)
 
 ### Betriebsszenarien der RS486SecureCom Applikation
 
