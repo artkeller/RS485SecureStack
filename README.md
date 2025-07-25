@@ -210,6 +210,8 @@ V
 
 ### Verdrahtungshinweise (Allgemein)
 
+Wir testen im Halbduplex-Mode, da die HW-159 diese Betriebsart unterstützen, die besonders einfach zu verkabeln ist undkeine Datenrichtung vorgibt.
+
 Für jeden ESP32 (C3 und S3):
 
 * **ESP32 TX** an **MAX485 DI**
