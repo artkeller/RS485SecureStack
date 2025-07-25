@@ -84,9 +84,9 @@ Für den Betrieb des `RS485SecureStack` benötigen Sie:
     * Beispiel: `HardwareSerial& rs485Serial = Serial1;`
 * **Für den Bus-Monitor:** Zusätzlich ein TFT-Display, z.B. das ST7789, wie es auf dem LilyGo T-Display S3 zu finden ist.
 
-## 🧪 Testkonfiguration und Anwendungsfall (Reale Welt)
+## 🧪 Anwendungsbeispiel: RS486SecureCom Applikation
 
-Um die Funktionalität, Sicherheit und Robustheit des RS485SecureStack zu demonstrieren und zu testen, verwenden wir die folgende reale Hardware-Konfiguration. Dieses Szenario simuliert eine typische Automatisierungsumgebung mit einer zentralen Steuerung, verteilten Sub-Systemen und Endgeräten, ergänzt durch ein Überwachungsmodul.
+Im `examples/` Verzeichnis dieses Projekts finden Sie die Applikation `RS486SecureCom`. Diese demonstriert die Nutzung der `RS485SecureStack`-Bibliothek in einer realen Welt, verteilten Umgebung. Die Applikation besteht aus vier verschiedenen Sketchen, die auf verschiedenen Node-Typen (Scheduler, Submaster, Clients und Bus-Monitor) ausgeführt werden und gemeinsam ein sicheres und intelligent verwaltetes RS485-Netzwerk bilden.
 
 ### Systemübersicht (Graphic)
 
@@ -122,7 +122,6 @@ V
 +----------------+
 ```
 
-
 *(Hinweis: Die Pfeile auf dem RS485 Bus symbolisieren bidirektionale Kommunikation. Jeder Node ist über einen RS485 Transceiver mit dem Bus verbunden.)*
 
 ### Bill of Materials (BOM)
@@ -153,43 +152,45 @@ Für jeden ESP32 (C3 und S3):
 Alle "A"-Pins der MAX485 Module werden miteinander verbunden, ebenso alle "B"-Pins.
 Der RS485-Bus sollte als eine durchgehende Linie (Daisy-Chain) und nicht als Stern-Topologie verdrahtet werden.
 
-### Test-Use Cases
+### Betriebsszenarien der RS486SecureCom Applikation
 
-1.  **Systemstart & Baudraten-Einmessung:**
+Die `RS486SecureCom` Applikation demonstriert die Interaktion der verschiedenen Nodes in realen Betriebsszenarien, die auch die Sicherheits- und Safety-Funktionen des `RS485SecureStack` umfassen:
+
+1.  **Systemstart & Baudraten-Einmessung (Sketches: Scheduler, alle Clients/Submaster, Bus-Monitor)**
     * Alle Nodes starten auf einer Standard-Baudrate (z.B. 9600 bps).
-    * Der Scheduler führt die automatische Einmessung durch, testet verschiedene Baudraten und setzt die optimale Rate für alle Nodes.
-    * **Monitor:** Beobachtet den gesamten Einmessprozess, zeigt die Baudratenwechsel und die resultierende optimale Rate an.
+    * Der **Scheduler** führt die automatische Einmessung durch, testet verschiedene Baudraten und setzt die optimale Rate für alle Nodes im Netzwerk.
+    * Der **Bus-Monitor** beobachtet den gesamten Einmessprozess, zeigt die Baudratenwechsel und die resultierende optimale Rate an.
 
-2.  **Regelmäßiger Betrieb:**
-    * Der Scheduler sendet kontinuierlich seinen Heartbeat.
-    * Der Scheduler vergibt Sendeerlaubnis an Submaster, die daraufhin mit Clients kommunizieren.
-    * Clients antworten auf Anfragen.
-    * **Monitor (Dashboard/Traffic-Modus):** Zeigt die Master-Präsenz, aktuelle Baudrate, Key ID, Pakete/Sekunde, Bytes/Sekunde und Fehlerraten an.
+2.  **Regelmäßiger Betrieb & Kommunikation (Sketches: Scheduler, Submaster, Clients, Bus-Monitor)**
+    * Der **Scheduler** sendet kontinuierlich seinen Heartbeat, um seine Präsenz zu signalisieren.
+    * Der **Scheduler** vergibt Sendeerlaubnis an die **Submaster**, die daraufhin mit ihren zugeordneten **Clients** kommunizieren können (z.B. Sensordaten abfragen, Befehle senden).
+    * Die **Clients** antworten auf Anfragen der Submaster oder des Schedulers.
+    * Der **Bus-Monitor** (im Dashboard- oder Traffic-Modus) zeigt die Master-Präsenz, die aktuelle Baudrate, die verwendete Key ID für die Verschlüsselung, die Paket- und Byte-Raten pro Sekunde sowie die aktuellen Fehlerraten an.
 
-3.  **Rekeying-Prozess:**
-    * Nach einer definierten Zeit initiiert der Scheduler ein Rekeying und verteilt eine neue Key ID und den entsprechenden Session Key an alle Nodes.
-    * **Monitor:** Zeigt den Wechsel der Key ID an und verifiziert, dass die Kommunikation mit dem neuen Schlüssel erfolgreich entschlüsselt wird.
+3.  **Rekeying-Prozess (Sketches: Scheduler, alle Clients/Submaster, Bus-Monitor)**
+    * Nach einer vordefinierten Zeit oder bei Bedarf initiiert der **Scheduler** einen Rekeying-Prozess. Dabei generiert er eine neue Session Key ID und den entsprechenden Session Key und verteilt diesen sicher an alle teilnehmenden Nodes.
+    * Der **Bus-Monitor** zeigt den Wechsel der Key ID an und verifiziert, dass die Kommunikation mit dem neuen Schlüssel erfolgreich entschlüsselt wird, was die Effektivität des dynamischen Rekeyings demonstriert.
 
-4.  **Fehlerfall: Baudrate verschlechtert sich (Simulation):**
-    * Während des Betriebs wird die Qualität der Busleitung absichtlich verschlechtert (z.B. durch Entfernen des Abschlusswiderstands, oder durch starke externe Störquelle).
-    * Der Master registriert erhöhte Fehlerraten (HMAC-Fehler, fehlende ACKs).
-    * Idealerweise initiiert der Master eine erneute Baudraten-Einmessung und reduziert die Baudrate, um die Kommunikation wiederherzustellen.
-    * **Monitor:** Zeigt die erhöhten Fehlerraten und den Baudraten-Abstieg an.
+4.  **Fehlerfall: Baudrate verschlechtert sich (Simulation) (Sketches: Scheduler, Bus-Monitor)**
+    * Während des Betriebs wird die Qualität der Busleitung absichtlich verschlechtert (z.B. durch Entfernen des Abschlusswiderstands, oder durch starke externe Störquelle am Test-Setup).
+    * Der **Scheduler** registriert erhöhte Kommunikations-Fehlerraten (z.B. HMAC-Fehler, fehlende ACKs).
+    * Idealerweise initiiert der **Scheduler** eine erneute Baudraten-Einmessung und reduziert die Baudrate, um die Kommunikation wiederherzustellen und die Systemrobustheit zu demonstrieren.
+    * Der **Bus-Monitor** zeigt die erhöhten Fehlerraten und den Baudraten-Abstieg an, der zur Kompensation vorgenommen wurde.
 
-5.  **Safety-Test: Anderer Master betritt den Bus:**
-    * Ein zweiter ESP32-C3, ebenfalls als "Scheduler" geflasht (mit anderer Adresse als 0, aber dem gleichen Master Key), wird an den Bus angeschlossen.
+5.  **Safety-Test: Anderer Master betritt den Bus (Sketches: Scheduler, Rogue Master, Bus-Monitor)**
+    * Ein zweiter ESP32-C3, ebenfalls als "Scheduler" geflasht (mit anderer Adresse als 0, aber dem gleichen Master Key), wird nachträglich an den Bus angeschlossen. Dieser simuliert einen "Rogue Master".
     * Dieser "Rogue Master" beginnt ebenfalls, Heartbeats zu senden.
-    * Der legitime Scheduler (Adresse 0) sollte den Heartbeat des Rogue Masters erkennen.
-    * **Legitimer Scheduler:** Geht in den "DANGER MODE" und stoppt alle aktiven Sendeoperationen. Serielle Ausgabe und/oder LED-Anzeige signalisiert den Fehler.
-    * **Submaster/Clients:** Überwachen weiterhin den Heartbeat des *offiziellen* Schedulers (Adresse 0). Falls dieser aufhört, aktiv zu sein, gehen sie in ihren passiven Zustand. Falls der Rogue Master ebenfalls auf Adresse 0 eingestellt wäre (was in der echten Welt zu Adresskonflikten führt), würden die Nodes den Heartbeat empfangen, aber der legitime Master würde immer noch den Konflikt bemerken.
-    * **Monitor (Dashboard/Debug-Modus):** Zeigt deutlich die Erkennung des unerwarteten Master-Heartbeats und dessen Absenderadresse an.
+    * Der **legitime Scheduler** (Adresse 0) sollte den Heartbeat des Rogue Masters erkennen.
+    * Der **legitime Scheduler** geht in den "DANGER MODE" und stoppt alle aktiven Sendeoperationen. Eine serielle Ausgabe und/oder eine LED-Anzeige signalisiert diesen kritischen Fehlerzustand.
+    * Die **Submaster/Clients** überwachen weiterhin den Heartbeat des *offiziellen* Schedulers (Adresse 0). Falls dieser aufhört, aktiv zu sein, gehen sie in ihren passiven Zustand. Falls der Rogue Master ebenfalls auf Adresse 0 eingestellt wäre (was in der echten Welt zu Adresskonflikten führt), würden die Nodes den Heartbeat empfangen, aber der legitime Master würde immer noch den Konflikt bemerken.
+    * Der **Bus-Monitor** (im Dashboard- oder Debug-Modus) zeigt deutlich die Erkennung des unerwarteten Master-Heartbeats und dessen Absenderadresse an, was die Schutzfunktion des Systems unterstreicht.
 
-6.  **Sicherheits-Test: Angreifer versucht zu Spoofen/Manipulieren:**
-    * Ein externer ESP32 mit einer eigenen, *falschen* Implementierung versucht, Pakete in den Bus einzuschleusen, die nicht mit dem korrekten HMAC signiert sind.
-    * **Alle Nodes:** Empfangen die Pakete, aber die HMAC-Prüfung schlägt fehl, und die Pakete werden verworfen.
-    * **Monitor (Debug-Modus):** Zeigt die empfangenen Pakete an, aber mit dem Hinweis "HMAC_OK: NO", was die erfolgreiche Abwehr der Manipulation demonstriert.
+6.  **Sicherheits-Test: Angreifer versucht zu Spoofen/Manipulieren (Sketches: Angreifer-Node, alle anderen Nodes, Bus-Monitor)**
+    * Ein externer ESP32 mit einer eigenen, **falschen Implementierung** versucht, Pakete in den Bus einzuschleusen, die nicht mit dem korrekten HMAC signiert sind.
+    * Alle **Nodes** (Scheduler, Submaster, Clients): Empfangen die Pakete, aber die HMAC-Prüfung schlägt fehl, und die Pakete werden verworfen, ohne dass deren Inhalt verarbeitet wird.
+    * Der **Bus-Monitor** (im Debug-Modus) zeigt die empfangenen Pakete an, aber mit dem Hinweis "HMAC_OK: NO", was die erfolgreiche Abwehr der Manipulation demonstriert und die Integrität des Systems gewährleistet.
 
-Dieses umfassende Setup ermöglicht eine realitätsnahe Validierung der robusten und sicheren Kommunikationsfähigkeiten des RS485SecureStack-Projekts.
+Dieses umfassende Setup ermöglicht eine realitätsnahe Validierung der robusten und sicheren Kommunikationsfähigkeiten der `RS486SecureCom` Applikation, die auf dem `RS485SecureStack`-Projekt aufbaut.
 
 -----
 
@@ -208,21 +209,22 @@ Dieses umfassende Setup ermöglicht eine realitätsnahe Validierung der robusten
 2.  **Hardware-Anschluss:**
     * Verbinde deine ESP32-Boards (ESP32-C3 und LilyGo T-Display S3) über die RS485 Transceiver (HW-159) wie im Abschnitt "Verdrahtungshinweise" beschrieben.
     * Stelle sicher, dass die RS485-Leitung korrekt terminiert ist (120 Ohm Widerstände an den Enden des Busses, falls verwendet).
-3.  **Anpassung der Sketches:**
-    * Öffne die gewünschten Node-Sketches (z.B. `poc/scheduler_main_esp32.ino`, `poc/bus_monitor_esp32.ino`) in der Arduino IDE.
+3.  **Anpassung der Sketches (für die RS486SecureCom Applikation):**
+    * Navigiere zum `examples/RS486SecureCom/` Verzeichnis.
+    * Öffne die gewünschten Node-Sketches (z.B. `scheduler_main_esp32.ino`, `client_main_esp32.ino`, `submaster_main_esp32.ino`, `bus_monitor_esp32.ino`) in der Arduino IDE.
     * **RS485-Pins:** Passe die GPIO-Pins für RX/TX und den DE/RE-Pin des RS485-Transceivers (falls verwendet) in den jeweiligen Sketches an deine Hardware an. Die Standard-UART0 wird oft für den Serial Monitor verwendet; für dedizierte RS485-Kommunikation ist es ratsam, eine andere HardwareSerial (z.B. `Serial1` oder `Serial2`) und entsprechende GPIOs zu verwenden.
-    * **`MASTER_KEY`:** Stelle sicher, dass der `MASTER_KEY` in allen Sketches, die am selben Bus kommunizieren sollen, **identisch** ist.
+    * **`MASTER_KEY`:** Stelle sicher, dass der `MASTER_KEY` in allen Sketches, die am selben Bus kommunizieren sollen, **identisch** ist. Diesen findest du in der `credantials.h` Datei.
     * **TFT-Pins (für Bus-Monitor):** Überprüfe und passe die TFT-Pins im `bus_monitor_esp32.ino` Sketch an die spezifische Pinbelegung deines LilyGo T-Display S3 an.
 
 ### Usage
 
 1.  **Flashen der Firmware:**
     * Wähle das korrekte Board und den COM-Port in der Arduino IDE aus (`Werkzeuge > Board`, `Werkzeuge > Port`).
-    * Lade die entsprechenden Sketches auf jedes deiner ESP32-Boards.
-        * Ein Board als **Scheduler**.
-        * Zwei Boards als **Submaster**.
-        * Zwei Boards als **Client**.
-        * Ein LilyGo T-Display S3 als **Bus-Monitor**.
+    * Lade die entsprechenden Sketches auf jedes deiner ESP32-Boards gemäß der gewünschten Rolle in der `RS486SecureCom`-Applikation:
+        * Ein Board als **Scheduler** (sketch: `scheduler_main_esp32.ino`).
+        * Zwei Boards als **Submaster** (sketch: `submaster_main_esp32.ino`).
+        * Zwei Boards als **Client** (sketch: `client_main_esp32.ino`).
+        * Ein LilyGo T-Display S3 als **Bus-Monitor** (sketch: `bus_monitor_esp32.ino`).
 2.  **Inbetriebnahme:**
     * Starte zuerst den **Scheduler (Master)**. Er wird beginnen, den Bus zu initialisieren und die Baudrate einzumessen.
     * Schalte dann die **Submaster** und **Clients** ein. Sie sollten die Baudraten-Anweisungen des Masters empfangen und sich anpassen.
