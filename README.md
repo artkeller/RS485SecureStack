@@ -86,7 +86,7 @@ Für den Betrieb des `RS485SecureStack` benötigen Sie:
 
 ## 🧪 Anwendungsbeispiel: RS485SecureCom Applikation
 
-Im `examples/` Verzeichnis dieses Projekts finden Sie die Applikation `RS486SecureCom`. Diese demonstriert die Nutzung der `RS485SecureStack`-Bibliothek in einer realen Welt, verteilten Umgebung. Die Applikation besteht aus vier verschiedenen Sketchen, die auf verschiedenen Node-Typen (Scheduler, Submaster, Clients und Bus-Monitor) ausgeführt werden und gemeinsam ein sicheres und intelligent verwaltetes RS485-Netzwerk bilden.
+Im `examples/` Verzeichnis dieses Projekts finden Sie die Applikation `RS485SecureCom`. Diese demonstriert die Nutzung der `RS485SecureStack`-Bibliothek in einer realen Welt, verteilten Umgebung. Die Applikation besteht aus vier verschiedenen Sketchen, die auf verschiedenen Node-Typen (Scheduler, Submaster, Clients und Bus-Monitor) ausgeführt werden und gemeinsam ein sicheres und intelligent verwaltetes RS485-Netzwerk bilden.
 
 ### Systemübersicht (Graphic)
 
